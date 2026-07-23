@@ -78,9 +78,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `zashhomo — lightweight mihomo supervisor + zashboard panel
 
 Usage:
-  zashhomo install [--mixed-port N] [--web-port N]
+  zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               Download kernel+panel, write config, register & start service
-  zashhomo run [--mixed-port N] [--web-port N]
+  zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               Run the daemon in the foreground (used by the service)
   zashhomo -i | interactive   Interactive management console
   zashhomo start|stop|restart Control the installed service
@@ -91,8 +91,9 @@ Usage:
   zashhomo uninstall [--purge] Stop & remove the service (and files with --purge)
   zashhomo version            Print version
 
-Ports: --mixed-port sets the mihomo proxy port (default 9190),
-       --web-port sets the panel port (default 9191).
+Ports: --mixed-port sets the mihomo proxy port (default 9190);
+       --web-port sets the panel port, keeping its host (default 127.0.0.1:9191);
+       --web-addr sets the full panel address, e.g. 0.0.0.0:9191 to expose externally.
 `)
 }
 
@@ -113,21 +114,40 @@ func loadOrInit(p *paths.Paths) (*config.Config, error) {
 	return cfg, nil
 }
 
-// parsePortFlags parses the optional --mixed-port / --web-port flags shared by
-// install and run. A returned value of 0 means "keep the configured default".
-func parsePortFlags(name string, args []string) (mixedPort, webPort int, err error) {
+// parseListenFlags parses the optional --mixed-port / --web-port / --web-addr
+// flags shared by install and run. A returned port of 0 / addr of "" means
+// "keep the configured default".
+func parseListenFlags(name string, args []string) (mixedPort, webPort int, webAddr string, err error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	mp := fs.Int("mixed-port", 0, "mihomo mixed (http+socks) proxy `port` (default 9190)")
-	wp := fs.Int("web-port", 0, "zashhomo panel `port` (default 9191)")
+	wp := fs.Int("web-port", 0, "panel `port`; keeps the configured host (default 127.0.0.1:9191)")
+	wa := fs.String("web-addr", "", "panel listen `address` (host:port); e.g. 0.0.0.0:9191 to expose externally")
 	if perr := fs.Parse(args); perr != nil {
 		if perr == flag.ErrHelp {
 			// -h already printed the flag usage; treat as a clean exit.
 			os.Exit(0)
 		}
-		return 0, 0, perr
+		return 0, 0, "", perr
 	}
-	return *mp, *wp, nil
+	return *mp, *wp, *wa, nil
+}
+
+// applyWebAddr overrides the panel listen address from the CLI flags: --web-addr
+// wins (a full host:port, e.g. 0.0.0.0:9191); otherwise --web-port changes only
+// the port and keeps the configured host (loopback by default).
+func applyWebAddr(cfg *config.Config, webAddr string, webPort int) {
+	if webAddr != "" {
+		cfg.WebAddr = webAddr
+		return
+	}
+	if webPort > 0 {
+		host, _, err := net.SplitHostPort(cfg.WebAddr)
+		if err != nil || host == "" {
+			host = "127.0.0.1"
+		}
+		cfg.WebAddr = fmt.Sprintf("%s:%d", host, webPort)
+	}
 }
 
 // panelURL returns the panel address with a one-shot login token, for display in
@@ -145,7 +165,7 @@ func panelURL(cfg *config.Config) string {
 }
 
 func cmdInstall(args []string) error {
-	mixedPort, webPort, err := parsePortFlags("install", args)
+	mixedPort, webPort, webAddr, err := parseListenFlags("install", args)
 	if err != nil {
 		return err
 	}
@@ -157,9 +177,7 @@ func cmdInstall(args []string) error {
 	if mixedPort > 0 {
 		cfg.MixedPort = mixedPort
 	}
-	if webPort > 0 {
-		cfg.WebAddr = fmt.Sprintf("0.0.0.0:%d", webPort)
-	}
+	applyWebAddr(cfg, webAddr, webPort)
 
 	fmt.Println("• Installing mihomo kernel…")
 	tag, updated, err := core.Install(p, cfg.CoreVersion)
@@ -216,7 +234,7 @@ func cmdInstall(args []string) error {
 }
 
 func cmdRun(args []string) error {
-	mixedPort, webPort, err := parsePortFlags("run", args)
+	mixedPort, webPort, webAddr, err := parseListenFlags("run", args)
 	if err != nil {
 		return err
 	}
@@ -225,13 +243,11 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	if mixedPort > 0 || webPort > 0 {
+	if mixedPort > 0 || webPort > 0 || webAddr != "" {
 		if mixedPort > 0 {
 			cfg.MixedPort = mixedPort
 		}
-		if webPort > 0 {
-			cfg.WebAddr = fmt.Sprintf("0.0.0.0:%d", webPort)
-		}
+		applyWebAddr(cfg, webAddr, webPort)
 		// Persist and regenerate the kernel config so the new ports take effect.
 		if err := subscription.GenerateConfig(p, cfg); err != nil {
 			return err

@@ -118,6 +118,10 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Set refresh interval…", action: "sub-interval"},
 		{label: "Open config file", action: "sub edit"},
 	}}
+	sysProxy := menuItem{label: "System proxy ▸", sub: []menuItem{
+		{label: "Enable system proxy", action: "system-proxy enable"},
+		{label: "Disable system proxy", action: "system-proxy disable"},
+	}}
 	uninstall := menuItem{label: "Uninstall", action: "uninstall"}
 	version := menuItem{label: "Version", action: "version"}
 	help := menuItem{label: "Help", action: "help"}
@@ -139,11 +143,11 @@ func rootMenu(st svc.State) []menuItem {
 	// Order so the obvious next step leads.
 	switch {
 	case !st.Installed:
-		return []menuItem{install, status, subs, update, start, stop, restart, uninstall, version, help, exit}
+		return []menuItem{install, status, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
 	case !st.Running:
-		return []menuItem{start, status, restart, stop, subs, update, install, uninstall, version, help, exit}
+		return []menuItem{start, status, restart, stop, subs, sysProxy, update, install, uninstall, version, help, exit}
 	default:
-		return []menuItem{status, stop, restart, start, subs, update, install, uninstall, version, help, exit}
+		return []menuItem{status, stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/LeeShunEE/zashhomo/internal/core"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
 	"github.com/LeeShunEE/zashhomo/internal/subscription"
+	"github.com/LeeShunEE/zashhomo/internal/sysproxy"
 	"github.com/LeeShunEE/zashhomo/internal/web"
 )
 
@@ -62,6 +63,26 @@ func Run(ctx context.Context, p *paths.Paths, cfg *config.Config) error {
 	}
 	webErr := srv.Start()
 	logger.Printf("panel available at http://%s", cfg.WebAddr)
+
+	// When the user opted into system-proxy management, point the OS proxy at the
+	// mixed-port while the daemon runs and clear it on shutdown. This is best
+	// effort: it acts on the session running the daemon, so on Windows a service
+	// running as LocalSystem cannot reach the interactive user's settings — those
+	// users should toggle it with `zashhomo system-proxy` instead.
+	if cfg.SystemProxy {
+		if err := sysproxy.Enable("127.0.0.1", cfg.MixedPort); err != nil {
+			logger.Printf("system proxy enable failed: %v", err)
+		} else {
+			logger.Printf("system proxy enabled (127.0.0.1:%d)", cfg.MixedPort)
+		}
+		defer func() {
+			if err := sysproxy.Disable(); err != nil {
+				logger.Printf("system proxy disable failed: %v", err)
+			} else {
+				logger.Printf("system proxy disabled")
+			}
+		}()
+	}
 
 	// Periodic subscription refresh (reload the kernel config).
 	wg.Add(1)

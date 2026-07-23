@@ -46,6 +46,7 @@ zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
 zashhomo -i | interactive     交互式管理菜单（方向键选择命令；非终端下回退为逐行输入）
 zashhomo service start|stop|restart|status   控制已安装的服务（start/stop/restart 需管理员）
 zashhomo status               查看服务状态
+zashhomo system-proxy enable|disable   开启/关闭系统代理（指向 mixed-port）
 zashhomo update [--core|--ui|--self|--all]   更新组件
 zashhomo sub add <url>        添加订阅
 zashhomo sub list             查看订阅（元信息 + 编辑提示）

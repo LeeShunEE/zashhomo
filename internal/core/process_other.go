@@ -159,6 +159,9 @@ func killWithPs(ps, binPath string) error {
 
 // isOurMihomo checks if a process is running our mihomo binary.
 func isOurMihomo(pid int, binPath string) bool {
+	// Get the current user's UID to avoid killing other users' processes
+	currentUID := os.Getuid()
+
 	// Check process ownership
 	process, err := os.FindProcess(pid)
 	if err != nil {

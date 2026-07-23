@@ -29,6 +29,19 @@ var (
 	menuHintStyle     = lipgloss.NewStyle().Faint(true)
 )
 
+// statusStyle colours the header status line: green when running, yellow when
+// installed but stopped, faint red when not installed.
+func statusStyle(st svc.State) lipgloss.Style {
+	switch {
+	case !st.Installed:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	case st.Running:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	}
+}
+
 // rootMenu builds the top-level management menu, ordered and annotated for the
 // current service state: the most useful next action leads, and actions that
 // don't apply yet are greyed with a reason. Items whose commands need free-form
@@ -88,6 +101,7 @@ type menuModel struct {
 	titles  []string
 	cursors []int
 	choice  menuItem
+	state   svc.State
 }
 
 func newMenuModel(st svc.State) menuModel {
@@ -95,6 +109,20 @@ func newMenuModel(st svc.State) menuModel {
 		stack:   [][]menuItem{rootMenu(st)},
 		titles:  []string{"zashhomo"},
 		cursors: []int{0},
+		state:   st,
+	}
+}
+
+// statusLine describes the service state for the header, e.g.
+// "Service: Installed (Running)" or "Service: Uninstalled".
+func statusLine(st svc.State) string {
+	switch {
+	case !st.Installed:
+		return "Service: Uninstalled"
+	case st.Running:
+		return "Service: Installed (Running)"
+	default:
+		return "Service: Installed (Not Running)"
 	}
 }
 
@@ -152,6 +180,8 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m menuModel) View() string {
 	var b strings.Builder
 	b.WriteString(menuTitleStyle.Render(strings.Join(m.titles, " ▸ ")))
+	b.WriteByte('\n')
+	b.WriteString(statusStyle(m.state).Render(statusLine(m.state)))
 	b.WriteString("\n\n")
 	cur := *m.cursor()
 	for i, it := range m.current() {

@@ -73,6 +73,49 @@ func ensureOnPath(dir string) (string, error) {
 	return "added to your PATH — open a new terminal for `zashhomo` to be found", nil
 }
 
+// removeFromPath drops dir from the current user's PATH (HKCU\Environment) if
+// present. It is the inverse of ensureOnPath and is best-effort: a missing Path
+// value or an absent entry is treated as success.
+func removeFromPath(dir string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	cur, valType, err := k.GetStringValue("Path")
+	if err == registry.ErrNotExist {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !pathContains(cur, dir) {
+		return nil // nothing to remove
+	}
+
+	target := strings.TrimRight(strings.ToLower(dir), `\`)
+	var keep []string
+	for _, p := range strings.Split(cur, ";") {
+		if strings.TrimRight(strings.ToLower(strings.TrimSpace(p)), `\`) == target {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	updated := strings.Join(keep, ";")
+	if valType == registry.EXPAND_SZ {
+		if err := k.SetExpandStringValue("Path", updated); err != nil {
+			return err
+		}
+	} else {
+		if err := k.SetStringValue("Path", updated); err != nil {
+			return err
+		}
+	}
+	broadcastEnvChange()
+	return nil
+}
+
 // pathContains reports whether pathList (';'-separated) already has dir.
 func pathContains(pathList, dir string) bool {
 	dir = strings.TrimRight(strings.ToLower(dir), `\`)

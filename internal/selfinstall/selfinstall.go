@@ -4,6 +4,7 @@
 package selfinstall
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,21 +59,33 @@ func EnsureInstalled() (Result, error) {
 	return res, nil
 }
 
-// Uninstall removes the installed executable (best-effort) unless it is the
-// currently running binary, which the OS may keep locked.
+// Uninstall reverses EnsureInstalled: it removes our install directory from PATH
+// and deletes the installed executable. When Uninstall is run via the installed
+// binary itself, deletion of that binary is scheduled to happen after the
+// process exits (immediate on Unix, delayed on Windows where the file is
+// locked). Both steps are best-effort and their errors are joined.
 func Uninstall() error {
 	dst := paths.SelfExe()
 	cur, _ := os.Executable()
 	if resolved, err := filepath.EvalSymlinks(cur); err == nil {
 		cur = resolved
 	}
-	if sameFile(cur, dst) {
-		return fmt.Errorf("skipped removing running binary %s", dst)
+
+	// Drop our install dir from PATH (no-op on Unix, where we never edited it).
+	pathErr := removeFromPath(filepath.Dir(dst))
+
+	var rmErr error
+	switch {
+	case sameFile(cur, dst):
+		// We are the installed binary; hand deletion to a platform helper.
+		rmErr = scheduleSelfDelete(dst)
+	default:
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			rmErr = err
+		}
 	}
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+
+	return errors.Join(pathErr, rmErr)
 }
 
 // sameFile reports whether a and b refer to the same on-disk file.

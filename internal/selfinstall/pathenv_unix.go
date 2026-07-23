@@ -24,3 +24,11 @@ func ensureOnPath(dir string) (string, error) {
 	}
 	return fmt.Sprintf("add %s to your PATH, e.g.  export PATH=\"%s:$PATH\"", dir, dir), nil
 }
+
+// removeFromPath is a no-op on Unix: ensureOnPath never edits shell profiles
+// (it only returns a hint), and the install dir is typically a shared location
+// like /usr/local/bin that must not be stripped from PATH.
+func removeFromPath(dir string) error {
+	_ = dir
+	return nil
+}

@@ -575,13 +575,6 @@ func cmdUninstall(args []string) error {
 	return nil
 }
 
-func statusWord(updated bool) string {
-	if updated {
-		return "installed"
-	}
-	return "up to date"
-}
-
 func orDash(s string) string {
 	if s == "" {
 		return "-"

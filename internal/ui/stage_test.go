@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -99,5 +100,34 @@ func TestStageDownloadTTY(t *testing.T) {
 	got, _ := os.ReadFile(dest)
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("content mismatch")
+	}
+}
+
+func TestStageSpinAnimatesAndFinalizes(t *testing.T) {
+	var out bytes.Buffer
+	s := &Stage{label: "working", out: &out, tty: true}
+	s.Start()
+	time.Sleep(250 * time.Millisecond) // let a few spinner frames tick
+	s.Done("done")
+	got := out.String()
+	if !strings.Contains(got, "\r") {
+		t.Errorf("expected carriage-return animation, got %q", got)
+	}
+	if !strings.Contains(got, "working done") {
+		t.Errorf("expected final line 'working done', got %q", got)
+	}
+}
+
+func TestStageNonTTYPrintsPlainLines(t *testing.T) {
+	var out bytes.Buffer
+	s := &Stage{label: "working", out: &out, tty: false}
+	s.Start()
+	s.Done("done")
+	got := out.String()
+	if strings.Contains(got, "\r") {
+		t.Errorf("non-TTY must not animate, got %q", got)
+	}
+	if !strings.Contains(got, "• working…") || !strings.Contains(got, "→ done") {
+		t.Errorf("expected plain label + result lines, got %q", got)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/core"
@@ -276,6 +277,13 @@ func panelURL(cfg *config.Config) string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("http://%s:%s/?token=%s", host, port, cfg.Secret)
+}
+
+// mixedProxyURL returns the local endpoint of mihomo's mixed proxy port, which
+// serves HTTP and SOCKS on the same port. It binds to loopback (allow-lan is
+// forced off), so clients point at 127.0.0.1.
+func mixedProxyURL(cfg *config.Config) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", cfg.MixedPort)
 }
 
 func cmdInstall(args []string) error {
@@ -567,6 +575,8 @@ func cmdStatus() error {
 	fmt.Print(line("service: ", stStyle.Render(st)+" ("+svc.Platform()+")"))
 	if cfg != nil {
 		fmt.Print(line("proxy:   ", systemProxyStatus(cfg)))
+		fmt.Print(line("mixed:   ", mixedProxyURL(cfg)))
+		fmt.Print(line("tun:     ", tunStatus(cfg)))
 		fmt.Print(line("panel:   ", panelURL(cfg)))
 		fmt.Print(line("kernel:  ", orDash(cfg.CoreVersion)))
 		fmt.Print(line("panelv:  ", orDash(cfg.UIVersion)))
@@ -594,6 +604,40 @@ func systemProxyStatus(cfg *config.Config) string {
 		return theme.StatusOk.Render("enabled") + " (" + server + ")"
 	}
 	return "disabled"
+}
+
+// tunStatus renders the TUN mode state for the status block. It prefers the
+// running kernel's live config so a panel toggle shows immediately, and falls
+// back to the persisted setting (flagged as such) when the kernel can't be
+// queried, e.g. while the service is stopped.
+func tunStatus(cfg *config.Config) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if tun, err := subscription.FetchTun(ctx, cfg); err == nil {
+		return tunStateString(tun, false)
+	}
+	if len(cfg.Tun) > 0 {
+		return tunStateString(cfg.Tun, true)
+	}
+	return "disabled"
+}
+
+// tunStateString formats a tun block's enable/stack. When persisted is true the
+// value comes from config rather than a live kernel, so an enabled state is
+// shown in the warn style to signal it isn't confirmed running.
+func tunStateString(tun map[string]any, persisted bool) string {
+	on, _ := tun["enable"].(bool)
+	if !on {
+		return "disabled"
+	}
+	label := "enabled"
+	if stack, ok := tun["stack"].(string); ok && stack != "" {
+		label += " (" + stack + ")"
+	}
+	if persisted {
+		return theme.StatusWarn.Render(label + " [config]")
+	}
+	return theme.StatusOk.Render(label)
 }
 
 // cmdSystemProxy enables or disables the OS system proxy, pointing it at the

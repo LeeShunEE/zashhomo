@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
@@ -54,10 +55,10 @@ func TestApplyWebAddr(t *testing.T) {
 
 func TestPopFlag(t *testing.T) {
 	tests := []struct {
-		args     []string
-		flag     string
+		args      []string
+		flag      string
 		wantFound bool
-		wantRest []string
+		wantRest  []string
 	}{
 		{[]string{"--force", "other"}, "--force", true, []string{"other"}},
 		{[]string{"other", "--force"}, "--force", true, []string{"other"}},
@@ -107,6 +108,28 @@ func TestOrDash(t *testing.T) {
 		if got := orDash(tt.input); got != tt.want {
 			t.Errorf("orDash(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestTunStateString(t *testing.T) {
+	tests := []struct {
+		name      string
+		tun       map[string]any
+		persisted bool
+		want      string // substring expected (styles may wrap it)
+	}{
+		{"disabled", map[string]any{"enable": false}, false, "disabled"},
+		{"missing enable", map[string]any{}, false, "disabled"},
+		{"enabled with stack", map[string]any{"enable": true, "stack": "gVisor"}, false, "enabled (gVisor)"},
+		{"enabled no stack", map[string]any{"enable": true}, false, "enabled"},
+		{"persisted flagged", map[string]any{"enable": true, "stack": "system"}, true, "[config]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tunStateString(tt.tun, tt.persisted); !strings.Contains(got, tt.want) {
+				t.Errorf("tunStateString(%v, %v) = %q, want substring %q", tt.tun, tt.persisted, got, tt.want)
+			}
+		})
 	}
 }
 

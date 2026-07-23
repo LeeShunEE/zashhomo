@@ -12,7 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: DCO Check
-        uses: developer-guy/dco-action@v1.0.0
         with:
-          target: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Check DCO
+        run: |
+          # Check that all commits have Signed-off-by
+          if [ "${{ github.event_name }}" = "push" ]; then
+            commits=$(git rev-list ${{ github.event.before }}..${{ github.sha }})
+          else
+            commits=$(git rev-list origin/${{ github.base_ref }}..HEAD)
+          fi
+
+          for commit in $commits; do
+            message=$(git log --format=%B -n 1 $commit)
+            if ! echo "$message" | grep -q "^Signed-off-by:"; then
+              echo "Commit $commit is missing Signed-off-by line"
+              echo "Message: $message"
+              exit 1
+            fi
+          done
+
+          echo "All commits have proper DCO sign-off"

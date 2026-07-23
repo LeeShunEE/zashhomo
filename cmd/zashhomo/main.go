@@ -420,13 +420,12 @@ func cmdInteractive(args []string) error {
 // Each selection tears down the menu (alt screen), runs the command so its
 // normal stdout/spinners render on the main screen, then returns to the menu.
 func cmdMenu(_ []string) error {
-	clearScreen()
-	fmt.Printf("%s\n\n", menuBanner())
-	_ = dispatch("status", nil)
 	for {
-		// Rebuild the menu from the current state each loop so ordering and greyed
-		// items reflect installs/starts made moments ago.
-		it, err := runMenu(svc.GetState())
+		// Rebuild the menu (and its banner+status header) from the current state
+		// each loop so ordering, greyed items, and the status block reflect
+		// installs/starts made moments ago.
+		st := svc.GetState()
+		it, err := runMenu(st, menuHeader(st))
 		if err != nil {
 			return err
 		}

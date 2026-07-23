@@ -7,8 +7,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LeeShunEE/zashhomo/internal/config"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
 	"github.com/LeeShunEE/zashhomo/internal/svc"
 )
+
+// bigBanner is the ASCII-art title shown at the top of the interactive menu.
+const bigBanner = ` _____   _    ____  _   _ _   _  ___  __  __  ___
+|__  /  / \  / ___|| | | | | | |/ _ \|  \/  |/ _ \
+  / /  / _ \ \___ \| |_| | |_| | | | | |\/| | | | |
+ / /_ / ___ \ ___) |  _  |  _  | |_| | |  | | |_| |
+/____/_/   \_\____/|_| |_|_| |_|\___/|_|  |_|\___/`
 
 // menuItem is one selectable row. action is the command line (minus the
 // "zashhomo" prefix) run when the item is chosen; when sub is non-empty the
@@ -23,23 +32,48 @@ type menuItem struct {
 }
 
 var (
+	menuBannerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
 	menuTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
 	menuSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
 	menuDisabledStyle = lipgloss.NewStyle().Faint(true)
 	menuHintStyle     = lipgloss.NewStyle().Faint(true)
+	menuLabelStyle    = lipgloss.NewStyle().Faint(true)
+	menuOkStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	menuWarnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 )
 
-// statusStyle colours the header status line: green when running, yellow when
-// installed but stopped, faint red when not installed.
-func statusStyle(st svc.State) lipgloss.Style {
+// menuHeader renders the big banner plus a compact status block for st. It is
+// shown at the top of the menu on every redraw, so the state (including "not
+// installed") is always visible. Config-derived fields fall back to defaults
+// when nothing has been installed yet, so the block renders in every state.
+func menuHeader(st svc.State) string {
+	var b strings.Builder
+	b.WriteString(menuBannerStyle.Render(bigBanner))
+	b.WriteString("\n\n")
+
+	dot, word, style := "○", "not installed", menuWarnStyle
 	switch {
 	case !st.Installed:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+		// keep the not-installed defaults
 	case st.Running:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+		dot, word, style = "●", "running", menuOkStyle
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+		dot, word, style = "○", "stopped", menuWarnStyle
 	}
+
+	line := func(label, val string) string {
+		return menuLabelStyle.Render(fmt.Sprintf("%-8s", label)) + val + "\n"
+	}
+	b.WriteString(line("service", style.Render(dot+" "+word)))
+
+	cfg, _ := config.Load(paths.New().Config)
+	if cfg != nil {
+		b.WriteString(line("panel", panelURL(cfg)))
+		b.WriteString(line("kernel", orDash(cfg.CoreVersion)))
+		b.WriteString(line("panelv", orDash(cfg.UIVersion)))
+		b.WriteString(line("subs", fmt.Sprintf("%d", len(cfg.Subscriptions))))
+	}
+	return b.String()
 }
 
 // rootMenu builds the top-level management menu, ordered and annotated for the
@@ -97,32 +131,19 @@ func rootMenu(st svc.State) []menuItem {
 // menuModel drives an arrow-key menu with nested submenus. Selecting a leaf sets
 // choice and quits; Esc/Backspace pops a submenu or, at the root, exits.
 type menuModel struct {
+	header  string
 	stack   [][]menuItem
 	titles  []string
 	cursors []int
 	choice  menuItem
-	state   svc.State
 }
 
-func newMenuModel(st svc.State) menuModel {
+func newMenuModel(st svc.State, header string) menuModel {
 	return menuModel{
+		header:  header,
 		stack:   [][]menuItem{rootMenu(st)},
 		titles:  []string{"zashhomo"},
 		cursors: []int{0},
-		state:   st,
-	}
-}
-
-// statusLine describes the service state for the header, e.g.
-// "Service: Installed (Running)" or "Service: Uninstalled".
-func statusLine(st svc.State) string {
-	switch {
-	case !st.Installed:
-		return "Service: Uninstalled"
-	case st.Running:
-		return "Service: Installed (Running)"
-	default:
-		return "Service: Installed (Not Running)"
 	}
 }
 
@@ -179,9 +200,11 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m menuModel) View() string {
 	var b strings.Builder
+	if m.header != "" {
+		b.WriteString(m.header)
+		b.WriteString("\n")
+	}
 	b.WriteString(menuTitleStyle.Render(strings.Join(m.titles, " ▸ ")))
-	b.WriteByte('\n')
-	b.WriteString(statusStyle(m.state).Render(statusLine(m.state)))
 	b.WriteString("\n\n")
 	cur := *m.cursor()
 	for i, it := range m.current() {
@@ -217,8 +240,8 @@ func (m menuModel) View() string {
 // chosen leaf item, or an item with action "exit". The alt screen keeps the menu
 // from cluttering scrollback, so command output printed afterwards reads as a
 // clean log.
-func runMenu(st svc.State) (menuItem, error) {
-	p := tea.NewProgram(newMenuModel(st), tea.WithAltScreen())
+func runMenu(st svc.State, header string) (menuItem, error) {
+	p := tea.NewProgram(newMenuModel(st, header), tea.WithAltScreen())
 	res, err := p.Run()
 	if err != nil {
 		return menuItem{}, err
@@ -228,9 +251,4 @@ func runMenu(st svc.State) (menuItem, error) {
 		return menuItem{action: "exit"}, nil
 	}
 	return final.choice, nil
-}
-
-// menuBanner is printed once when entering the interactive console.
-func menuBanner() string {
-	return fmt.Sprintf("zashhomo %s — interactive console", version)
 }

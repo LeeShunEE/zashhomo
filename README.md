@@ -123,7 +123,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o zashhomo ./cmd/zashhomo
 
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
-  -ldflags "-s -w -X main.version=v0.1.0" -o zashhomo-linux-arm64 ./cmd/zashhomo
+  -ldflags "-s -w -X main.version=v0.1.0" -o zashhomo-v0.1.0-linux-arm64 ./cmd/zashhomo
 ```
 
 ## 设计说明
@@ -135,5 +135,5 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 ## 发布
 
 推送 `v*` tag 触发 `.github/workflows/release.yml`：交叉编译 linux/darwin(amd64/arm64)
-与 windows/amd64，产物 `zashhomo-<os>-<arch>[.exe]` + `SHA256SUMS.txt` 上传至 Releases。
+与 windows(amd64/arm64)，产物 `zashhomo-<version>-<os>-<arch>[.exe]` + `SHA256SUMS.txt` 上传至 Releases。
 仓库地址：[github.com/LeeShunEE/zashhomo](https://github.com/LeeShunEE/zashhomo)。

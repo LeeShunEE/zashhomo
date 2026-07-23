@@ -45,6 +45,9 @@ zashhomo service start|stop|restart|status   控制已安装的服务（start/st
 zashhomo status               查看服务状态
 zashhomo update [--core|--ui|--self|--all]   更新组件
 zashhomo sub add <url>        添加订阅
+zashhomo sub list             查看订阅（元信息 + 编辑提示）
+zashhomo sub edit             用编辑器打开配置文件
+zashhomo sub interval [dur]   查看/设置全局刷新间隔（如 6h、30m）
 zashhomo sub update           重新生成配置并热重载内核
 zashhomo uninstall [--purge]  停服务并移除（--purge 连同数据/配置一起删）
 zashhomo version              打印版本

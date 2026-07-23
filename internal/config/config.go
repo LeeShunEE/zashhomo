@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -117,6 +118,21 @@ func (c *Config) RefreshInterval() time.Duration {
 		return 12 * time.Hour
 	}
 	return d
+}
+
+// SetRefreshInterval validates and stores a Go duration string (e.g. "6h",
+// "30m", "90m"). It rejects unparseable or non-positive values so the caller
+// never persists a value that RefreshInterval would silently discard.
+func (c *Config) SetRefreshInterval(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid interval %q (use e.g. 6h, 30m, 90m): %w", s, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("interval must be positive, got %q", s)
+	}
+	c.SubInterval = s
+	return nil
 }
 
 // AddSubscription appends a subscription, deriving a name if none is given.

@@ -46,8 +46,11 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Everything (--all)", action: "update --all"},
 	}}
 	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
+		{label: "List subscriptions", action: "sub list"},
 		{label: "Add subscription…", action: "sub-add"},
 		{label: "Update & reload", action: "sub update"},
+		{label: "Set refresh interval…", action: "sub-interval"},
+		{label: "Open config file", action: "sub edit"},
 	}}
 	uninstall := menuItem{label: "Uninstall", action: "uninstall"}
 	version := menuItem{label: "Version", action: "version"}

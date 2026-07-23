@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -183,6 +184,9 @@ Usage:
   zashhomo status             Show service status
   zashhomo update [flags]     Update components (--core --ui --self --all)
   zashhomo sub add <url>      Add a subscription
+  zashhomo sub list           List subscriptions (metadata + edit hints)
+  zashhomo sub edit           Open the config file in your editor
+  zashhomo sub interval [dur] Show or set the global refresh interval (e.g. 6h)
   zashhomo sub update         Regenerate config and hot-reload the kernel
   zashhomo uninstall [--purge] Stop & remove the service (and files with --purge)
   zashhomo version            Print version
@@ -403,14 +407,22 @@ func cmdMenu(_ []string) error {
 		if it.disabled != "" && !confirmForce(it.label, it.disabled) {
 			continue
 		}
-		if it.action == "sub-add" {
+		switch it.action {
+		case "sub-add":
 			url := promptLine("Subscription URL (blank to cancel): ")
 			if url == "" {
 				fmt.Println("cancelled")
 			} else if err := dispatch("sub", []string{"add", url}); err != nil {
 				printCmdError(err)
 			}
-		} else {
+		case "sub-interval":
+			val := promptLine("Refresh interval (e.g. 6h, 30m; blank to cancel): ")
+			if val == "" {
+				fmt.Println("cancelled")
+			} else if err := dispatch("sub", []string{"interval", val}); err != nil {
+				printCmdError(err)
+			}
+		default:
 			fields := strings.Fields(it.action)
 			if err := dispatch(fields[0], fields[1:]); err != nil {
 				printCmdError(err)
@@ -687,9 +699,101 @@ func cmdSub(args []string) error {
 		fmt.Println("subscriptions reloaded")
 		return nil
 
+	case "list", "ls":
+		printSubscriptions(p, cfg)
+		return nil
+
+	case "edit":
+		return openInEditor(p.Config)
+
+	case "interval":
+		if len(args) < 2 {
+			fmt.Printf("refresh interval: %s\n", cfg.RefreshInterval())
+			fmt.Println("set with:  zashhomo sub interval <duration>   (e.g. 6h, 30m, 90m)")
+			return nil
+		}
+		if err := cfg.SetRefreshInterval(args[1]); err != nil {
+			return err
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		// Regenerate config so the new interval reaches the proxy-providers, then
+		// hot-reload if the kernel is up. The daemon's own refresh loop reads the
+		// interval at startup, so a restart is still needed to change its cadence.
+		if err := subscription.GenerateConfig(p, cfg); err != nil {
+			return err
+		}
+		fmt.Printf("refresh interval set to %s\n", cfg.RefreshInterval())
+		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
+			fmt.Println("kernel reloaded")
+		}
+		fmt.Println("restart the service to apply the daemon refresh cycle:  zashhomo service restart")
+		return nil
+
 	default:
 		return fmt.Errorf("sub: unknown subcommand %q", args[0])
 	}
+}
+
+// printSubscriptions lists the configured subscriptions with their metadata and
+// the config path, plus the commands that edit them.
+func printSubscriptions(p *paths.Paths, cfg *config.Config) {
+	fmt.Printf("config:   %s\n", p.Config)
+	fmt.Printf("interval: %s\n", cfg.RefreshInterval())
+	if len(cfg.Subscriptions) == 0 {
+		fmt.Println("subs:     none")
+		fmt.Println("\nadd one with:  zashhomo sub add <url>")
+		return
+	}
+	fmt.Printf("subs:     %d\n\n", len(cfg.Subscriptions))
+	for i, s := range cfg.Subscriptions {
+		name := s.Name
+		if name == "" {
+			name = fmt.Sprintf("sub-%d", i)
+		}
+		fmt.Printf("  [%d] %s\n      %s\n", i, name, s.URL)
+	}
+	fmt.Println("\nedit:  zashhomo sub edit             (open config file)")
+	fmt.Println("       zashhomo sub interval <dur>  (set refresh interval, e.g. 6h)")
+}
+
+// openInEditor opens path in the user's editor: $VISUAL or $EDITOR when set,
+// otherwise the platform default (notepad on Windows, `open -t` on macOS,
+// xdg-open elsewhere). Stdio is inherited so terminal editors work in place.
+func openInEditor(path string) error {
+	var name string
+	var args []string
+	if ed := firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR")); ed != "" {
+		fields := strings.Fields(ed)
+		name, args = fields[0], append(fields[1:], path)
+	} else {
+		switch runtime.GOOS {
+		case "windows":
+			name, args = "notepad", []string{path}
+		case "darwin":
+			name, args = "open", []string{"-t", path}
+		default:
+			name, args = "xdg-open", []string{path}
+		}
+	}
+	cmd := exec.Command(name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	fmt.Printf("opening %s in %s…\n", path, name)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("open editor (%s): %w; edit the file directly: %s", name, err, path)
+	}
+	return nil
+}
+
+// firstNonEmpty returns the first non-empty string in vals, or "".
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func cmdUninstall(args []string) error {

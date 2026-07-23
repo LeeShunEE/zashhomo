@@ -13,6 +13,7 @@ package subscription
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -230,12 +231,17 @@ func applyOverrides(base map[string]any, cfg *config.Config) {
 	for _, k := range []string{"port", "socks-port", "redir-port", "tproxy-port", "external-ui"} {
 		delete(base, k)
 	}
+	// When zashhomo manages TUN (synced from a panel toggle), its block wins over
+	// whatever the subscription set so the user's choice persists across restarts.
+	if len(cfg.Tun) > 0 {
+		base["tun"] = cfg.Tun
+	}
 }
 
 // minimalDirectConfig is the DIRECT-only config used when there are no
 // subscriptions or a fetch fails with no prior config to fall back on.
 func minimalDirectConfig(cfg *config.Config) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"mixed-port":          cfg.MixedPort,
 		"allow-lan":           false,
 		"mode":                "rule",
@@ -247,6 +253,10 @@ func minimalDirectConfig(cfg *config.Config) map[string]any {
 		},
 		"rules": []any{"MATCH,PROXY"},
 	}
+	if len(cfg.Tun) > 0 {
+		m["tun"] = cfg.Tun
+	}
+	return m
 }
 
 // writeYAML marshals v and writes it to path (0600; may contain the secret).
@@ -282,4 +292,60 @@ func Reload(ctx context.Context, cfg *config.Config, configPath string) error {
 		return fmt.Errorf("reload: %s", resp.Status)
 	}
 	return nil
+}
+
+// ApplyTun patches config.yaml's `tun` block in place to match cfg.Tun, without
+// refetching subscriptions. This lets a persisted panel toggle take effect on
+// the next kernel start even between subscription refreshes (config.yaml is not
+// regenerated on a plain restart). When cfg.Tun is empty zashhomo does not
+// manage TUN, so the existing file (including any subscription-provided tun) is
+// left untouched.
+func ApplyTun(p *paths.Paths, cfg *config.Config) error {
+	if len(cfg.Tun) == 0 {
+		return nil
+	}
+	data, err := os.ReadFile(p.MihomoConfig())
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if doc == nil {
+		return nil
+	}
+	doc["tun"] = cfg.Tun
+	return writeYAML(p.MihomoConfig(), doc)
+}
+
+// FetchTun returns the running kernel's live `tun` config block via
+// GET /configs. The panel toggles TUN by patching the running kernel only, so
+// this is how zashhomo observes that choice to persist it. It returns (nil, nil)
+// when the kernel reports no tun block.
+func FetchTun(ctx context.Context, cfg *config.Config) (map[string]any, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+cfg.ControllerAddr+"/configs", nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Secret != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Secret)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("get configs: %s", resp.Status)
+	}
+	var doc struct {
+		Tun map[string]any `json:"tun"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("decode configs: %w", err)
+	}
+	return doc.Tun, nil
 }

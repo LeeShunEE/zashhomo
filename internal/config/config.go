@@ -40,6 +40,11 @@ type Config struct {
 	// CoreVersion / UIVersion record the installed component versions.
 	CoreVersion string `yaml:"core_version"`
 	UIVersion   string `yaml:"ui_version"`
+	// Tun is the mihomo TUN config block zashhomo persists so a toggle made in
+	// the panel (which only changes the running kernel, not config.yaml) survives
+	// kernel restarts. It is the raw block synced live from the kernel; nil/empty
+	// means zashhomo does not manage TUN and leaves the subscription's own to it.
+	Tun map[string]any `yaml:"tun,omitempty"`
 
 	path string `yaml:"-"`
 }

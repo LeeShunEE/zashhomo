@@ -224,6 +224,79 @@ func TestWriteYAML(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigInjectsTunDirect(t *testing.T) {
+	p := newTestPaths(t)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		Tun:            map[string]any{"enable": true, "stack": "gVisor"},
+	}
+
+	if err := GenerateConfig(p, cfg); err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+	got := readConfig(t, p)
+	for _, want := range []string{"tun:", "enable: true", "stack: gVisor"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("direct config missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestGenerateConfigTunOverridesSubscription(t *testing.T) {
+	p := newTestPaths(t)
+	url := serveConfig(t, sampleClashConfig)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		Subscriptions:  []config.Subscription{{Name: "primary", URL: url}},
+		Tun:            map[string]any{"enable": false},
+	}
+
+	if err := GenerateConfig(p, cfg); err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+	got := readConfig(t, p)
+	if !strings.Contains(got, "tun:") || !strings.Contains(got, "enable: false") {
+		t.Errorf("managed tun block not injected over subscription:\n%s", got)
+	}
+}
+
+func TestApplyTunPatchesExistingConfig(t *testing.T) {
+	p := newTestPaths(t)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	// A pre-existing config.yaml with no tun block.
+	base := map[string]any{"mixed-port": 9190, "rules": []any{"MATCH,PROXY"}}
+	if err := writeYAML(p.MihomoConfig(), base); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	// Empty cfg.Tun leaves the file untouched (unmanaged).
+	cfg := &config.Config{}
+	if err := ApplyTun(p, cfg); err != nil {
+		t.Fatalf("ApplyTun (empty): %v", err)
+	}
+	if strings.Contains(readConfig(t, p), "tun:") {
+		t.Errorf("unmanaged tun should not be injected:\n%s", readConfig(t, p))
+	}
+
+	// A managed cfg.Tun is patched in without regenerating from a subscription.
+	cfg.Tun = map[string]any{"enable": true, "stack": "gVisor"}
+	if err := ApplyTun(p, cfg); err != nil {
+		t.Fatalf("ApplyTun (managed): %v", err)
+	}
+	got := readConfig(t, p)
+	for _, want := range []string{"tun:", "enable: true", "stack: gVisor", "MATCH,PROXY"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("patched config missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func readConfig(t *testing.T, p *paths.Paths) string {
 	t.Helper()
 	data, err := os.ReadFile(p.MihomoConfig())

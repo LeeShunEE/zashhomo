@@ -20,9 +20,18 @@ import (
 )
 
 const (
-	// setupCookie marks that a client has already been sent to the setup deep-link,
-	// so subsequent root requests serve the SPA instead of redirecting again.
+	// setupCookie breaks the root->setup redirect loop: the server cannot see the
+	// URL fragment, so it cannot tell "/#/setup" apart from a bare "/". This
+	// short-lived marker lets the immediate follow-up request serve the SPA
+	// instead of redirecting again. It intentionally expires within seconds so a
+	// later fresh load of "/" re-asserts the same-origin proxy backend, self-
+	// healing any stale port zashboard may have fallen back to (its default is
+	// 127.0.0.1:9090). Re-running setup is safe: zashboard dedupes backends by
+	// host/port/secret, so this never accumulates duplicates.
 	setupCookie = "zh_setup"
+	// setupCookieTTL is how long the loop-breaker survives. Only long enough to
+	// span the redirect it guards; short so every fresh "/" load re-runs setup.
+	setupCookieTTL = 10 * time.Second
 	// authCookie carries the secret after a successful login; its presence (with
 	// the correct value) lets the caller through the secret gate.
 	authCookie = "zh_auth"
@@ -105,7 +114,7 @@ func (s *Server) handler() http.Handler {
 					Name:     setupCookie,
 					Value:    "1",
 					Path:     "/",
-					MaxAge:   int((365 * 24 * time.Hour).Seconds()),
+					MaxAge:   int(setupCookieTTL.Seconds()),
 					HttpOnly: true,
 				})
 				http.Redirect(w, r, s.setupURL(r), http.StatusFound)

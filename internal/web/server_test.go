@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecret = "s3cret-test-token"
@@ -122,6 +123,35 @@ func TestGateCookiePassesAndProxies(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), `"path":"/proxies"`) {
 		t.Fatalf("request was not proxied to the controller: %s", b)
+	}
+}
+
+func TestSetupRedirectIsShortLivedSoItSelfHeals(t *testing.T) {
+	ts, cleanup := newTestServer(t)
+	defer cleanup()
+	// An authed root visit with no setup cookie steers zashboard at the same-origin
+	// proxy via the setup deep-link.
+	resp := do(t, ts.URL+"/", &http.Cookie{Name: authCookie, Value: testSecret}, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 302 {
+		t.Fatalf("status=%d, want 302 (setup redirect)", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "/#/setup?") || !strings.Contains(loc, "port=") {
+		t.Fatalf("expected setup deep-link with a port, got Location: %q", loc)
+	}
+	// The loop-breaker cookie must expire quickly so a later fresh load re-runs
+	// setup and self-heals a stale backend port, rather than sticking for a year.
+	var c *http.Cookie
+	for _, k := range resp.Cookies() {
+		if k.Name == setupCookie {
+			c = k
+		}
+	}
+	if c == nil {
+		t.Fatalf("expected %s cookie to break the redirect loop", setupCookie)
+	}
+	if c.MaxAge <= 0 || time.Duration(c.MaxAge)*time.Second > time.Minute {
+		t.Fatalf("setup cookie MaxAge=%d s, want a short positive TTL (<=1m) so setup self-heals", c.MaxAge)
 	}
 }
 

@@ -6,46 +6,75 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/LeeShunEE/zashhomo/internal/svc"
 )
 
 // menuItem is one selectable row. action is the command line (minus the
 // "zashhomo" prefix) run when the item is chosen; when sub is non-empty the
-// item opens a submenu instead and action is ignored.
+// item opens a submenu instead and action is ignored. A non-empty disabled
+// reason means the action doesn't apply in the current state: the row is greyed
+// but still selectable, and choosing it prompts for confirmation before forcing.
 type menuItem struct {
-	label  string
-	action string
-	sub    []menuItem
+	label    string
+	action   string
+	sub      []menuItem
+	disabled string
 }
 
 var (
 	menuTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
 	menuSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	menuDisabledStyle = lipgloss.NewStyle().Faint(true)
 	menuHintStyle     = lipgloss.NewStyle().Faint(true)
 )
 
-// rootMenu is the top-level management menu. Items whose commands need free-form
+// rootMenu builds the top-level management menu, ordered and annotated for the
+// current service state: the most useful next action leads, and actions that
+// don't apply yet are greyed with a reason. Items whose commands need free-form
 // input (a subscription URL) use a sentinel action handled by cmdInteractive.
-func rootMenu() []menuItem {
-	return []menuItem{
-		{label: "Status", action: "status"},
-		{label: "Start service", action: "service start"},
-		{label: "Stop service", action: "service stop"},
-		{label: "Restart service", action: "service restart"},
-		{label: "Update ▸", sub: []menuItem{
-			{label: "Kernel (--core)", action: "update --core"},
-			{label: "Panel (--ui)", action: "update --ui"},
-			{label: "Self (--self)", action: "update --self"},
-			{label: "Everything (--all)", action: "update --all"},
-		}},
-		{label: "Subscriptions ▸", sub: []menuItem{
-			{label: "Add subscription…", action: "sub-add"},
-			{label: "Update & reload", action: "sub update"},
-		}},
-		{label: "Install (defaults)", action: "install"},
-		{label: "Uninstall", action: "uninstall"},
-		{label: "Version", action: "version"},
-		{label: "Help", action: "help"},
-		{label: "Exit", action: "exit"},
+func rootMenu(st svc.State) []menuItem {
+	status := menuItem{label: "Status", action: "status"}
+	install := menuItem{label: "Install (defaults)", action: "install"}
+	start := menuItem{label: "Start service", action: "service start"}
+	stop := menuItem{label: "Stop service", action: "service stop"}
+	restart := menuItem{label: "Restart service", action: "service restart"}
+	update := menuItem{label: "Update ▸", sub: []menuItem{
+		{label: "Kernel (--core)", action: "update --core"},
+		{label: "Panel (--ui)", action: "update --ui"},
+		{label: "Self (--self)", action: "update --self"},
+		{label: "Everything (--all)", action: "update --all"},
+	}}
+	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
+		{label: "Add subscription…", action: "sub-add"},
+		{label: "Update & reload", action: "sub update"},
+	}}
+	uninstall := menuItem{label: "Uninstall", action: "uninstall"}
+	version := menuItem{label: "Version", action: "version"}
+	help := menuItem{label: "Help", action: "help"}
+	exit := menuItem{label: "Exit", action: "exit"}
+
+	// Grey out actions that are meaningless in the current state.
+	switch {
+	case !st.Installed:
+		start.disabled = "not installed yet"
+		stop.disabled = "not installed yet"
+		restart.disabled = "not installed yet"
+		uninstall.disabled = "not installed yet"
+	case st.Running:
+		start.disabled = "service already running"
+	default:
+		stop.disabled = "service is not running"
+	}
+
+	// Order so the obvious next step leads.
+	switch {
+	case !st.Installed:
+		return []menuItem{install, status, subs, update, start, stop, restart, uninstall, version, help, exit}
+	case !st.Running:
+		return []menuItem{start, status, restart, stop, subs, update, install, uninstall, version, help, exit}
+	default:
+		return []menuItem{status, stop, restart, start, subs, update, install, uninstall, version, help, exit}
 	}
 }
 
@@ -55,12 +84,12 @@ type menuModel struct {
 	stack   [][]menuItem
 	titles  []string
 	cursors []int
-	choice  string
+	choice  menuItem
 }
 
-func newMenuModel() menuModel {
+func newMenuModel(st svc.State) menuModel {
 	return menuModel{
-		stack:   [][]menuItem{rootMenu()},
+		stack:   [][]menuItem{rootMenu(st)},
 		titles:  []string{"zashhomo"},
 		cursors: []int{0},
 	}
@@ -80,7 +109,7 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cur := m.cursor()
 	switch key.String() {
 	case "ctrl+c", "q":
-		m.choice = "exit"
+		m.choice = menuItem{action: "exit"}
 		return m, tea.Quit
 	case "up", "k":
 		if *cur > 0 {
@@ -100,7 +129,7 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.titles = m.titles[:len(m.titles)-1]
 			m.cursors = m.cursors[:len(m.cursors)-1]
 		} else {
-			m.choice = "exit"
+			m.choice = menuItem{action: "exit"}
 			return m, tea.Quit
 		}
 	case "enter", "right", "l":
@@ -110,7 +139,7 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.titles = append(m.titles, strings.TrimSuffix(it.label, " ▸"))
 			m.cursors = append(m.cursors, 0)
 		} else {
-			m.choice = it.action
+			m.choice = it
 			return m, tea.Quit
 		}
 	}
@@ -123,11 +152,26 @@ func (m menuModel) View() string {
 	b.WriteString("\n\n")
 	cur := *m.cursor()
 	for i, it := range m.current() {
-		if i == cur {
-			b.WriteString(menuSelectedStyle.Render("❯ " + it.label))
-		} else {
-			b.WriteString("  " + it.label)
+		label := it.label
+		if it.disabled != "" {
+			label += "  (" + it.disabled + ")"
 		}
+		prefix := "  "
+		if i == cur {
+			prefix = "❯ "
+		}
+		var style lipgloss.Style
+		switch {
+		case i == cur && it.disabled != "":
+			style = menuSelectedStyle.Faint(true)
+		case i == cur:
+			style = menuSelectedStyle
+		case it.disabled != "":
+			style = menuDisabledStyle
+		default:
+			style = lipgloss.NewStyle()
+		}
+		b.WriteString(style.Render(prefix + label))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
@@ -136,21 +180,19 @@ func (m menuModel) View() string {
 	return b.String()
 }
 
-// runMenu shows the menu on the alternate screen and returns the chosen action
-// (or "exit"). The alt screen keeps the menu from cluttering scrollback, so
-// command output printed afterwards reads as a clean log.
-func runMenu() (string, error) {
-	p := tea.NewProgram(newMenuModel(), tea.WithAltScreen())
+// runMenu shows the menu (built for st) on the alternate screen and returns the
+// chosen leaf item, or an item with action "exit". The alt screen keeps the menu
+// from cluttering scrollback, so command output printed afterwards reads as a
+// clean log.
+func runMenu(st svc.State) (menuItem, error) {
+	p := tea.NewProgram(newMenuModel(st), tea.WithAltScreen())
 	res, err := p.Run()
 	if err != nil {
-		return "", err
+		return menuItem{}, err
 	}
 	final, ok := res.(menuModel)
-	if !ok {
-		return "exit", nil
-	}
-	if final.choice == "" {
-		return "exit", nil
+	if !ok || final.choice.action == "" {
+		return menuItem{action: "exit"}, nil
 	}
 	return final.choice, nil
 }

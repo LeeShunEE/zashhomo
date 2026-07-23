@@ -4,6 +4,7 @@ package svc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kardianos/service"
@@ -115,6 +116,32 @@ func Status() (string, error) {
 	default:
 		return "unknown", nil
 	}
+}
+
+// State summarises the service's installation and run status so callers (the
+// interactive menu) can adapt what they offer without issuing several queries.
+type State struct {
+	Installed bool
+	Running   bool
+}
+
+// GetState reports whether the service is installed and, if so, running. A
+// not-installed service yields the zero State; any other status error is
+// treated as installed-but-status-unknown so the menu still offers control
+// actions rather than hiding them.
+func GetState() State {
+	s, _, err := newService(nil, "")
+	if err != nil {
+		return State{}
+	}
+	st, err := s.Status()
+	if errors.Is(err, service.ErrNotInstalled) {
+		return State{}
+	}
+	if err != nil {
+		return State{Installed: true}
+	}
+	return State{Installed: true, Running: st == service.StatusRunning}
 }
 
 // Platform reports the detected service system (e.g. systemd, launchd).

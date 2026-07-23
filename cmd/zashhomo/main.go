@@ -388,15 +388,22 @@ func cmdMenu(_ []string) error {
 	fmt.Printf("%s\n\n", menuBanner())
 	_ = dispatch("status", nil)
 	for {
-		action, err := runMenu()
+		// Rebuild the menu from the current state each loop so ordering and greyed
+		// items reflect installs/starts made moments ago.
+		it, err := runMenu(svc.GetState())
 		if err != nil {
 			return err
 		}
-		if action == "" || action == "exit" {
+		if it.action == "" || it.action == "exit" {
 			return nil
 		}
 		clearScreen()
-		if action == "sub-add" {
+		// A greyed action doesn't apply in the current state; make the user
+		// confirm before forcing it through.
+		if it.disabled != "" && !confirmForce(it.label, it.disabled) {
+			continue
+		}
+		if it.action == "sub-add" {
 			url := promptLine("Subscription URL (blank to cancel): ")
 			if url == "" {
 				fmt.Println("cancelled")
@@ -404,13 +411,27 @@ func cmdMenu(_ []string) error {
 				printCmdError(err)
 			}
 		} else {
-			fields := strings.Fields(action)
+			fields := strings.Fields(it.action)
 			if err := dispatch(fields[0], fields[1:]); err != nil {
 				printCmdError(err)
 			}
 		}
 		fmt.Println()
 		promptLine("Press Enter to return to the menu… ")
+	}
+}
+
+// confirmForce warns that an action doesn't apply in the current state (reason)
+// and asks whether to run it anyway. It returns true to proceed.
+func confirmForce(label, reason string) bool {
+	fmt.Printf("%s — %s.\n", strings.TrimSuffix(label, " ▸"), reason)
+	switch strings.ToLower(promptLine("Run it anyway? [y/N]: ")) {
+	case "y", "yes":
+		fmt.Println()
+		return true
+	default:
+		fmt.Println("cancelled")
+		return false
 	}
 }
 
@@ -464,9 +485,12 @@ func cmdConsoleLine(_ []string) error {
 }
 
 func cmdStatus() error {
-	st, err := svc.Status()
-	if err != nil {
-		return err
+	state := svc.GetState()
+	st := "running"
+	if !state.Installed {
+		st = "not installed"
+	} else if !state.Running {
+		st = "stopped"
 	}
 	p := paths.New()
 	cfg, _ := config.Load(p.Config)

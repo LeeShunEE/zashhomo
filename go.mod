@@ -1,4 +1,4 @@
-module github.com/zashhomo/zashhomo
+module github.com/LeeShunEE/zashhomo
 
 go 1.23
 

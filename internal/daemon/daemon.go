@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zashhomo/zashhomo/internal/config"
-	"github.com/zashhomo/zashhomo/internal/core"
-	"github.com/zashhomo/zashhomo/internal/paths"
-	"github.com/zashhomo/zashhomo/internal/subscription"
-	"github.com/zashhomo/zashhomo/internal/web"
+	"github.com/LeeShunEE/zashhomo/internal/config"
+	"github.com/LeeShunEE/zashhomo/internal/core"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/subscription"
+	"github.com/LeeShunEE/zashhomo/internal/web"
 )
 
 // Run starts all components and blocks until ctx is cancelled. It returns after

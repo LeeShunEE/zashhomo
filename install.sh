@@ -1,14 +1,14 @@
 #!/usr/bin/env sh
 # zashhomo one-line installer for Linux and macOS.
-#   curl -fsSL https://raw.githubusercontent.com/zashhomo/zashhomo/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.sh | bash
 #
 # Environment overrides:
-#   ZASHHOMO_REPO   owner/repo (default zashhomo/zashhomo)
+#   ZASHHOMO_REPO   owner/repo (default LeeShunEE/zashhomo)
 #   ZASHHOMO_BIN    install dir (default /usr/local/bin)
 #   ZASHHOMO_NO_INSTALL=1  download only; skip `zashhomo install`
 set -eu
 
-REPO="${ZASHHOMO_REPO:-zashhomo/zashhomo}"
+REPO="${ZASHHOMO_REPO:-LeeShunEE/zashhomo}"
 BIN_DIR="${ZASHHOMO_BIN:-/usr/local/bin}"
 
 info() { printf '\033[1;34m•\033[0m %s\n' "$*"; }

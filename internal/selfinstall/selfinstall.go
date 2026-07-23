@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/zashhomo/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
 )
 
 // Result describes what EnsureInstalled did.

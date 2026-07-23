@@ -19,30 +19,36 @@
 Linux / macOS：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/zashhomo/zashhomo/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.sh | bash
 ```
 
 Windows（PowerShell）：
 
 ```powershell
-irm https://raw.githubusercontent.com/zashhomo/zashhomo/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 ```
 
-安装完成后打开 `http://<主机>:9091` 即为 zashboard 面板。
+安装完成后打开 `http://<主机>:9191` 即为 zashboard 面板。
 
 ## 命令
 
 ```
-zashhomo install            下载内核+面板 → 生成默认配置 → 注册系统服务 → 启动
-zashhomo run                前台运行守护（服务调用此命令）
-zashhomo start|stop|restart 控制已安装的服务
-zashhomo status             查看服务状态
+zashhomo install [--mixed-port N] [--web-port N]
+                              下载内核+面板 → 生成默认配置 → 注册系统服务 → 启动
+zashhomo run [--mixed-port N] [--web-port N]
+                              前台运行守护（服务调用此命令）
+zashhomo -i | interactive     交互式管理控制台（循环输入子命令）
+zashhomo start|stop|restart   控制已安装的服务
+zashhomo status               查看服务状态
 zashhomo update [--core|--ui|--self|--all]   更新组件
-zashhomo sub add <url>      添加订阅
-zashhomo sub update         重新生成配置并热重载内核
-zashhomo uninstall [--purge] 停服务并移除（--purge 连同数据/配置一起删）
-zashhomo version            打印版本
+zashhomo sub add <url>        添加订阅
+zashhomo sub update           重新生成配置并热重载内核
+zashhomo uninstall [--purge]  停服务并移除（--purge 连同数据/配置一起删）
+zashhomo version              打印版本
 ```
+
+`--mixed-port` 指定 mihomo 混合代理端口（默认 9190，启动 mihomo 时生效），
+`--web-port` 指定面板端口（默认 9191）；指定后会写入并持久化到 `zashhomo.yaml`。
 
 ### 添加订阅
 
@@ -71,8 +77,8 @@ zashhomo sub add https://example.com/your-subscription
 ```yaml
 controller_addr: 127.0.0.1:9090   # mihomo external-controller（仅回环）
 secret: <自动生成>                 # Clash API 密钥
-web_addr: 0.0.0.0:9091            # 面板 + API 反代监听地址
-mixed_port: 7890                  # mihomo 混合代理端口
+web_addr: 0.0.0.0:9191            # 面板 + API 反代监听地址（可用 --web-port 改）
+mixed_port: 9190                  # mihomo 混合代理端口（可用 --mixed-port 改）
 sub_interval: 12h                 # 订阅刷新间隔
 subscriptions: []                 # 订阅列表
 core_version: ""                  # 已装内核版本（自动记录）
@@ -104,6 +110,4 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 推送 `v*` tag 触发 `.github/workflows/release.yml`：交叉编译 linux/darwin(amd64/arm64)
 与 windows/amd64，产物 `zashhomo-<os>-<arch>[.exe]` + `SHA256SUMS.txt` 上传至 Releases。
-
-> **占位符**：脚本、CI、`update --self` 中的仓库名均为 `zashhomo/zashhomo`。
-> Fork 后请全局替换为你的 `owner/repo`。推送并打 tag、生成 Releases 后，一行安装脚本方可生效。
+仓库地址：[github.com/LeeShunEE/zashhomo](https://github.com/LeeShunEE/zashhomo)。

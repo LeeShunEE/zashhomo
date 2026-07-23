@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zashhomo/zashhomo/internal/archive"
-	"github.com/zashhomo/zashhomo/internal/ghrelease"
-	"github.com/zashhomo/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/archive"
+	"github.com/LeeShunEE/zashhomo/internal/ghrelease"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
 )
 
 // ZashboardRepo is the upstream zashboard repository.

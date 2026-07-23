@@ -1,13 +1,13 @@
 # zashhomo one-line installer for Windows (PowerShell).
-#   irm https://raw.githubusercontent.com/zashhomo/zashhomo/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 #
 # Environment overrides:
-#   $env:ZASHHOMO_REPO        owner/repo (default zashhomo/zashhomo)
+#   $env:ZASHHOMO_REPO        owner/repo (default LeeShunEE/zashhomo)
 #   $env:ZASHHOMO_BIN         install dir (default %LOCALAPPDATA%\Programs\zashhomo)
 #   $env:ZASHHOMO_NO_INSTALL  set to 1 to download only
 $ErrorActionPreference = 'Stop'
 
-$repo = if ($env:ZASHHOMO_REPO) { $env:ZASHHOMO_REPO } else { 'zashhomo/zashhomo' }
+$repo = if ($env:ZASHHOMO_REPO) { $env:ZASHHOMO_REPO } else { 'LeeShunEE/zashhomo' }
 $binDir = if ($env:ZASHHOMO_BIN) { $env:ZASHHOMO_BIN } else { Join-Path $env:LOCALAPPDATA 'Programs\zashhomo' }
 
 function Info($m) { Write-Host "* $m" -ForegroundColor Cyan }

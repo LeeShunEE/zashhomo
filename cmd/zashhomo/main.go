@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,61 +14,62 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/zashhomo/zashhomo/internal/config"
-	"github.com/zashhomo/zashhomo/internal/core"
-	"github.com/zashhomo/zashhomo/internal/daemon"
-	"github.com/zashhomo/zashhomo/internal/ghrelease"
-	"github.com/zashhomo/zashhomo/internal/panel"
-	"github.com/zashhomo/zashhomo/internal/paths"
-	"github.com/zashhomo/zashhomo/internal/selfinstall"
-	"github.com/zashhomo/zashhomo/internal/subscription"
-	"github.com/zashhomo/zashhomo/internal/svc"
+	"github.com/LeeShunEE/zashhomo/internal/config"
+	"github.com/LeeShunEE/zashhomo/internal/core"
+	"github.com/LeeShunEE/zashhomo/internal/daemon"
+	"github.com/LeeShunEE/zashhomo/internal/ghrelease"
+	"github.com/LeeShunEE/zashhomo/internal/panel"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/selfinstall"
+	"github.com/LeeShunEE/zashhomo/internal/subscription"
+	"github.com/LeeShunEE/zashhomo/internal/svc"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=<tag>".
 var version = "dev"
 
 // selfRepo is this project's GitHub repo, used by `update --self`.
-// NOTE: replace the owner to match your fork before publishing.
-const selfRepo = "zashhomo/zashhomo"
+const selfRepo = "LeeShunEE/zashhomo"
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	cmd := os.Args[1]
-	args := os.Args[2:]
-
-	var err error
-	switch cmd {
-	case "install":
-		err = cmdInstall(args)
-	case "run":
-		err = cmdRun(args)
-	case "start", "stop", "restart":
-		err = svc.Control(cmd)
-	case "status":
-		err = cmdStatus()
-	case "update":
-		err = cmdUpdate(args)
-	case "sub":
-		err = cmdSub(args)
-	case "uninstall":
-		err = cmdUninstall(args)
-	case "version", "-v", "--version":
-		fmt.Printf("zashhomo %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
-	case "help", "-h", "--help":
-		usage()
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
-		usage()
-		os.Exit(2)
-	}
-
-	if err != nil {
+	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+}
+
+// dispatch executes a single command (cmd with args). It does not call os.Exit,
+// so the interactive console can reuse it line by line.
+func dispatch(cmd string, args []string) error {
+	switch cmd {
+	case "install":
+		return cmdInstall(args)
+	case "run":
+		return cmdRun(args)
+	case "start", "stop", "restart":
+		return svc.Control(cmd)
+	case "status":
+		return cmdStatus()
+	case "update":
+		return cmdUpdate(args)
+	case "sub":
+		return cmdSub(args)
+	case "uninstall":
+		return cmdUninstall(args)
+	case "version", "-v", "--version":
+		fmt.Printf("zashhomo %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+		return nil
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	case "interactive", "-i", "--interactive":
+		return cmdInteractive(args)
+	default:
+		return fmt.Errorf("unknown command: %s (try 'zashhomo help')", cmd)
 	}
 }
 
@@ -74,8 +77,11 @@ func usage() {
 	fmt.Fprint(os.Stderr, `zashhomo — lightweight mihomo supervisor + zashboard panel
 
 Usage:
-  zashhomo install            Download kernel+panel, write config, register & start service
-  zashhomo run                Run the daemon in the foreground (used by the service)
+  zashhomo install [--mixed-port N] [--web-port N]
+                              Download kernel+panel, write config, register & start service
+  zashhomo run [--mixed-port N] [--web-port N]
+                              Run the daemon in the foreground (used by the service)
+  zashhomo -i | interactive   Interactive management console
   zashhomo start|stop|restart Control the installed service
   zashhomo status             Show service status
   zashhomo update [flags]     Update components (--core --ui --self --all)
@@ -83,6 +89,9 @@ Usage:
   zashhomo sub update         Regenerate config and hot-reload the kernel
   zashhomo uninstall [--purge] Stop & remove the service (and files with --purge)
   zashhomo version            Print version
+
+Ports: --mixed-port sets the mihomo proxy port (default 9190),
+       --web-port sets the panel port (default 9191).
 `)
 }
 
@@ -103,11 +112,38 @@ func loadOrInit(p *paths.Paths) (*config.Config, error) {
 	return cfg, nil
 }
 
-func cmdInstall(_ []string) error {
+// parsePortFlags parses the optional --mixed-port / --web-port flags shared by
+// install and run. A returned value of 0 means "keep the configured default".
+func parsePortFlags(name string, args []string) (mixedPort, webPort int, err error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	mp := fs.Int("mixed-port", 0, "mihomo mixed (http+socks) proxy `port` (default 9190)")
+	wp := fs.Int("web-port", 0, "zashhomo panel `port` (default 9191)")
+	if perr := fs.Parse(args); perr != nil {
+		if perr == flag.ErrHelp {
+			// -h already printed the flag usage; treat as a clean exit.
+			os.Exit(0)
+		}
+		return 0, 0, perr
+	}
+	return *mp, *wp, nil
+}
+
+func cmdInstall(args []string) error {
+	mixedPort, webPort, err := parsePortFlags("install", args)
+	if err != nil {
+		return err
+	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)
 	if err != nil {
 		return err
+	}
+	if mixedPort > 0 {
+		cfg.MixedPort = mixedPort
+	}
+	if webPort > 0 {
+		cfg.WebAddr = fmt.Sprintf("0.0.0.0:%d", webPort)
 	}
 
 	fmt.Println("• Installing mihomo kernel…")
@@ -164,11 +200,30 @@ func cmdInstall(_ []string) error {
 	return nil
 }
 
-func cmdRun(_ []string) error {
+func cmdRun(args []string) error {
+	mixedPort, webPort, err := parsePortFlags("run", args)
+	if err != nil {
+		return err
+	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)
 	if err != nil {
 		return err
+	}
+	if mixedPort > 0 || webPort > 0 {
+		if mixedPort > 0 {
+			cfg.MixedPort = mixedPort
+		}
+		if webPort > 0 {
+			cfg.WebAddr = fmt.Sprintf("0.0.0.0:%d", webPort)
+		}
+		// Persist and regenerate the kernel config so the new ports take effect.
+		if err := subscription.GenerateConfig(p, cfg); err != nil {
+			return err
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
 	}
 	// Run under the service manager; interactive runs stay in the foreground and
 	// honour Ctrl-C via the signal handler below.
@@ -177,6 +232,49 @@ func cmdRun(_ []string) error {
 		defer stop()
 		return daemon.Run(ctx, p, cfg)
 	})
+}
+
+// cmdInteractive runs a read-eval loop over the regular subcommands — a
+// lightweight management console. The daemon itself is run by the installed
+// service (or `zashhomo run`); here the user just issues management commands.
+func cmdInteractive(_ []string) error {
+	fmt.Printf("zashhomo %s — interactive console. Type 'help' for commands, 'exit' to quit.\n\n", version)
+	_ = dispatch("status", nil)
+	fmt.Println()
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for {
+		fmt.Print("zashhomo> ")
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+			}
+			fmt.Println()
+			return nil
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		switch fields[0] {
+		case "exit", "quit":
+			return nil
+		case "help", "?":
+			usage()
+			continue
+		case "interactive", "-i", "--interactive":
+			fmt.Println("already in interactive mode")
+			continue
+		case "run":
+			fmt.Println("`run` starts the foreground daemon; run it directly with `zashhomo run` instead.")
+			continue
+		}
+		if err := dispatch(fields[0], fields[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+	}
 }
 
 func cmdStatus() error {

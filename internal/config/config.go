@@ -44,8 +44,8 @@ func Default() *Config {
 	return &Config{
 		ControllerAddr: "127.0.0.1:9090",
 		Secret:         randomSecret(),
-		WebAddr:        "0.0.0.0:9091",
-		MixedPort:      7890,
+		WebAddr:        "0.0.0.0:9191",
+		MixedPort:      9190,
 		SubInterval:    "12h",
 	}
 }
@@ -84,10 +84,10 @@ func Load(path string) (*Config, error) {
 		cfg.Secret = randomSecret()
 	}
 	if cfg.WebAddr == "" {
-		cfg.WebAddr = "0.0.0.0:9091"
+		cfg.WebAddr = "0.0.0.0:9191"
 	}
 	if cfg.MixedPort == 0 {
-		cfg.MixedPort = 7890
+		cfg.MixedPort = 9190
 	}
 	if cfg.SubInterval == "" {
 		cfg.SubInterval = "12h"

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zashhomo/zashhomo/internal/archive"
-	"github.com/zashhomo/zashhomo/internal/ghrelease"
-	"github.com/zashhomo/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/archive"
+	"github.com/LeeShunEE/zashhomo/internal/ghrelease"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
 )
 
 // MihomoRepo is the upstream mihomo kernel repository.

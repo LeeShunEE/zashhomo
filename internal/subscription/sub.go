@@ -10,8 +10,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/zashhomo/zashhomo/internal/config"
-	"github.com/zashhomo/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/config"
+	"github.com/LeeShunEE/zashhomo/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 

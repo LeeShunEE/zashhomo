@@ -100,7 +100,6 @@ func subscriptionMenu() []menuItem {
 // don't apply yet are greyed with a reason. Items whose commands need free-form
 // input (a subscription URL) use a sentinel action handled by cmdInteractive.
 func rootMenu(st svc.State) []menuItem {
-	status := menuItem{label: "Status", action: "status"}
 	install := menuItem{label: "Install (defaults)", action: "install"}
 	start := menuItem{label: "Start service", action: "service start"}
 	stop := menuItem{label: "Stop service", action: "service stop"}
@@ -144,11 +143,11 @@ func rootMenu(st svc.State) []menuItem {
 	// Order so the obvious next step leads.
 	switch {
 	case !st.Installed:
-		return []menuItem{install, status, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
+		return []menuItem{install, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
 	case !st.Running:
-		return []menuItem{start, status, restart, stop, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{start, restart, stop, subs, sysProxy, update, install, uninstall, version, help, exit}
 	default:
-		return []menuItem{status, stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
 	}
 }
 

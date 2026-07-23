@@ -224,7 +224,13 @@ func cmdUpdate(args []string) error {
 	}
 	if doSelf || doAll {
 		if err := selfUpdate(); err != nil {
-			return err
+			// When self-update was explicitly requested, treat failure as fatal.
+			// Under --all it is best-effort: don't undo a successful core/ui update
+			// just because no self release exists yet or GitHub is unreachable.
+			if doSelf {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "warning: self-update skipped: %v\n", err)
 		}
 	}
 	if (doCore || doUI || doAll) && !doSelf {

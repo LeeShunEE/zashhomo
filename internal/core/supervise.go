@@ -73,8 +73,16 @@ func (s *Supervisor) runOnce(parent context.Context) error {
 	cmd := exec.CommandContext(ctx, s.BinPath, "-d", s.DataDir, "-f", s.ConfigPath)
 	cmd.Stdout = s.Stdout
 	cmd.Stderr = s.Stderr
+	// Set platform pre-start attributes (process group / death signal) so the
+	// kernel does not outlive this process.
+	prepareChild(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
+	}
+	// Attach the started child to a kill-on-parent-death mechanism (Windows job
+	// object). Best-effort: a failure here only weakens orphan protection.
+	if err := trackChild(cmd); err != nil {
+		s.logf("warning: could not bind kernel to parent lifetime: %v", err)
 	}
 
 	monitorDone := make(chan struct{})

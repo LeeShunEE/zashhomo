@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -129,6 +130,20 @@ func parsePortFlags(name string, args []string) (mixedPort, webPort int, err err
 	return *mp, *wp, nil
 }
 
+// panelURL returns the panel address with a one-shot login token, for display in
+// install/status output. A wildcard listen address is shown as localhost.
+func panelURL(cfg *config.Config) string {
+	host, port, err := net.SplitHostPort(cfg.WebAddr)
+	if err != nil {
+		return "http://" + cfg.WebAddr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%s/?token=%s", host, port, cfg.Secret)
+}
+
 func cmdInstall(args []string) error {
 	mixedPort, webPort, err := parsePortFlags("install", args)
 	if err != nil {
@@ -190,7 +205,7 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
-	fmt.Printf("\n✓ Installed. Open the panel at http://%s\n", cfg.WebAddr)
+	fmt.Printf("\n✓ Installed. Open the panel at:\n  %s\n", panelURL(cfg))
 	if res.PathNote != "" {
 		fmt.Printf("  note: %s\n", res.PathNote)
 	}
@@ -286,7 +301,7 @@ func cmdStatus() error {
 	cfg, _ := config.Load(p.Config)
 	fmt.Printf("service: %s (%s)\n", st, svc.Platform())
 	if cfg != nil {
-		fmt.Printf("panel:   http://%s\n", cfg.WebAddr)
+		fmt.Printf("panel:   %s\n", panelURL(cfg))
 		fmt.Printf("kernel:  %s\n", orDash(cfg.CoreVersion))
 		fmt.Printf("panelv:  %s\n", orDash(cfg.UIVersion))
 		fmt.Printf("subs:    %d\n", len(cfg.Subscriptions))

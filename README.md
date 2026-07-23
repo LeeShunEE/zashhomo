@@ -8,8 +8,9 @@
 
 - **进程守护**：启动、健康检查（Clash `/version`）、崩溃指数退避自动重启（1s→30s）。
 - **自动下载 / 更新内核**：按平台自动选择 mihomo 资产（amd64 默认取 `compatible` 兼容包）。
-- **内置面板托管**：自带 HTTP 静态站托管 zashboard，并反向代理 Clash REST API（自动注入 secret）。
-  打开一个地址即用，无需手填 secret；内核只监听 `127.0.0.1:9090`，对外仅暴露面板端口。
+- **内置面板托管 + 统一密钥**：自带 HTTP 静态站托管 zashboard，并反向代理 Clash REST API。
+  同一个自动生成的 secret 既保护 mihomo API（写入内核配置、控制器仅回环），也作为面板访问凭证
+  （首次用带 token 的 URL 解锁、之后靠 cookie）。
 - **订阅 / 配置管理**：以 mihomo `proxy-providers` 方式合并多个订阅，定时刷新并热重载。
 - **系统服务**：通过 [kardianos/service](https://github.com/kardianos/service) 统一封装
   systemd / launchd / Windows 服务，开机自启。
@@ -28,7 +29,9 @@ Windows（PowerShell）：
 irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 ```
 
-安装完成后打开 `http://<主机>:9191` 即为 zashboard 面板。
+安装完成后，`zashhomo status` 会打印一个带 token 的面板地址（形如
+`http://127.0.0.1:9191/?token=<secret>`），浏览器打开即自动登录为 zashboard 面板。默认仅监听
+回环，远程访问见下文「访问与安全」。
 
 ## 命令
 
@@ -76,14 +79,25 @@ zashhomo sub add https://example.com/your-subscription
 
 ```yaml
 controller_addr: 127.0.0.1:9090   # mihomo external-controller（仅回环）
-secret: <自动生成>                 # Clash API 密钥
-web_addr: 0.0.0.0:9191            # 面板 + API 反代监听地址（可用 --web-port 改）
+secret: <自动生成>                 # 同时保护 Clash API 与面板访问
+web_addr: 127.0.0.1:9191          # 面板 + API 反代监听地址（默认仅回环）
 mixed_port: 9190                  # mihomo 混合代理端口（可用 --mixed-port 改）
 sub_interval: 12h                 # 订阅刷新间隔
 subscriptions: []                 # 订阅列表
 core_version: ""                  # 已装内核版本（自动记录）
 ui_version: ""                    # 已装面板版本（自动记录）
 ```
+
+## 访问与安全
+
+- **单一 secret**：zashhomo 自动生成一个 128-bit secret（存于 `zashhomo.yaml`，0600），同时用作
+  mihomo 的 Clash API 密钥与 web 面板的访问凭证，无需手动配置。
+- **默认仅回环**：web 面板默认 `127.0.0.1:9191`，mihomo 控制器 `127.0.0.1:9090`，都只对本机可见。
+- **打开面板**：`zashhomo status` 给出带 token 的地址 `http://127.0.0.1:9191/?token=<secret>`，
+  浏览器打开即自动登录；直接访问则弹出登录页，输入 secret 解锁。API 客户端可用
+  `Authorization: Bearer <secret>`。
+- **远程访问**：推荐 SSH 端口转发，如 `ssh -L 9191:127.0.0.1:9191 user@host` 后在本机打开面板；
+  若要直接对外暴露，把 `web_addr` 改为 `0.0.0.0:9191`——此时这道 secret gate 就是对外的唯一防护。
 
 ## 从源码构建
 
@@ -104,7 +118,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 - 仅依赖标准库 + `gopkg.in/yaml.v3` + `github.com/kardianos/service`，无 cobra 等重型框架；
   CLI 子命令为手写 dispatch，`CGO_ENABLED=0` 全静态 + `-ldflags "-s -w"` 瘦身。
-- 内核只在回环地址暴露控制端口，凭据由面板反代统一注入，避免密钥外泄。
+- 内核与面板默认都只听回环；面板与 Clash API 共用同一 secret，反代统一注入，凭据不外泄。
 
 ## 发布
 

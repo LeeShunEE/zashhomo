@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
@@ -19,6 +18,11 @@ const bigBanner = ` _____   _    ____  _   _ _   _  ___  __  __  ___
  / /_ / ___ \ ___) |  _  |  _  | |_| | |  | | |_| |
 /____/_/   \_\____/|_| |_|_| |_|\___/|_|  |_|\___/`
 
+func init() {
+	// Initialize theme based on terminal background
+	theme = AdaptiveTheme()
+}
+
 // menuItem is one selectable row. action is the command line (minus the
 // "zashhomo" prefix) run when the item is chosen; when sub is non-empty the
 // item opens a submenu instead and action is ignored. A non-empty disabled
@@ -31,38 +35,27 @@ type menuItem struct {
 	disabled string
 }
 
-var (
-	menuBannerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	menuTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13"))
-	menuSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	menuDisabledStyle = lipgloss.NewStyle().Faint(true)
-	menuHintStyle     = lipgloss.NewStyle().Faint(true)
-	menuLabelStyle    = lipgloss.NewStyle().Faint(true)
-	menuOkStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	menuWarnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-)
-
 // menuHeader renders the big banner plus a compact status block for st. It is
 // shown at the top of the menu on every redraw, so the state (including "not
 // installed") is always visible. Config-derived fields fall back to defaults
 // when nothing has been installed yet, so the block renders in every state.
 func menuHeader(st svc.State) string {
 	var b strings.Builder
-	b.WriteString(menuBannerStyle.Render(bigBanner))
+	b.WriteString(theme.Banner.Render(bigBanner))
 	b.WriteString("\n\n")
 
-	dot, word, style := "○", "not installed", menuWarnStyle
+	dot, word, style := "○", "not installed", theme.StatusWarn
 	switch {
 	case !st.Installed:
 		// keep the not-installed defaults
 	case st.Running:
-		dot, word, style = "●", "running", menuOkStyle
+		dot, word, style = "●", "running", theme.StatusOk
 	default:
-		dot, word, style = "○", "stopped", menuWarnStyle
+		dot, word, style = "○", "stopped", theme.StatusWarn
 	}
 
 	line := func(label, val string) string {
-		return menuLabelStyle.Render(fmt.Sprintf("%-8s", label)) + val + "\n"
+		return theme.Label.Render(fmt.Sprintf("%-8s", label)) + val + "\n"
 	}
 	b.WriteString(line("service", style.Render(dot+" "+word)))
 
@@ -200,39 +193,52 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m menuModel) View() string {
 	var b strings.Builder
+
+	// Header area with card border (bigBanner + status only)
 	if m.header != "" {
-		b.WriteString(m.header)
+		b.WriteString(theme.Card.Render(m.header))
 		b.WriteString("\n")
 	}
-	b.WriteString(menuTitleStyle.Render(strings.Join(m.titles, " ▸ ")))
+
+	// Title below the card, closer to menu items
+	b.WriteString(theme.Title.Render(strings.Join(m.titles, " ▸ ")))
 	b.WriteString("\n\n")
+
+	// Menu items list
 	cur := *m.cursor()
 	for i, it := range m.current() {
 		label := it.label
 		if it.disabled != "" {
 			label += "  (" + it.disabled + ")"
 		}
+
+		// Selection indicator
 		prefix := "  "
 		if i == cur {
 			prefix = "❯ "
 		}
-		var style lipgloss.Style
+
+		// Apply styles
+		var rendered string
 		switch {
 		case i == cur && it.disabled != "":
-			style = menuSelectedStyle.Faint(true)
+			rendered = theme.Disabled.Faint(true).Render(prefix + label)
 		case i == cur:
-			style = menuSelectedStyle
+			rendered = theme.Selected.Render(prefix + label)
 		case it.disabled != "":
-			style = menuDisabledStyle
+			rendered = theme.Disabled.Render(prefix + label)
 		default:
-			style = lipgloss.NewStyle()
+			rendered = theme.MenuItem.Render(prefix + label)
 		}
-		b.WriteString(style.Render(prefix + label))
+		b.WriteString(rendered)
 		b.WriteByte('\n')
 	}
+
+	// Bottom hint area
 	b.WriteByte('\n')
-	b.WriteString(menuHintStyle.Render("↑/↓ move · enter select · esc back · q quit"))
+	b.WriteString(theme.Hint.Render("↑/↓ move · enter select · esc back · q quit"))
 	b.WriteByte('\n')
+
 	return b.String()
 }
 

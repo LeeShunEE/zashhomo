@@ -530,19 +530,29 @@ func cmdConsoleLine(_ []string) error {
 func cmdStatus() error {
 	state := svc.GetState()
 	st := "running"
+	stStyle := theme.StatusOk
 	if !state.Installed {
 		st = "not installed"
+		stStyle = theme.StatusWarn
 	} else if !state.Running {
 		st = "stopped"
+		stStyle = theme.StatusWarn
 	}
+
 	p := paths.New()
 	cfg, _ := config.Load(p.Config)
-	fmt.Printf("service: %s (%s)\n", st, svc.Platform())
+
+	// Output with themed styles
+	line := func(label, value string) string {
+		return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
+	}
+
+	fmt.Print(line("service: ", stStyle.Render(st)+" ("+svc.Platform()+")"))
 	if cfg != nil {
-		fmt.Printf("panel:   %s\n", panelURL(cfg))
-		fmt.Printf("kernel:  %s\n", orDash(cfg.CoreVersion))
-		fmt.Printf("panelv:  %s\n", orDash(cfg.UIVersion))
-		fmt.Printf("subs:    %d\n", len(cfg.Subscriptions))
+		fmt.Print(line("panel:   ", panelURL(cfg)))
+		fmt.Print(line("kernel:  ", orDash(cfg.CoreVersion)))
+		fmt.Print(line("panelv:  ", orDash(cfg.UIVersion)))
+		fmt.Print(line("subs:    ", fmt.Sprintf("%d", len(cfg.Subscriptions))))
 	}
 	return nil
 }
@@ -770,21 +780,31 @@ func cmdSub(args []string) error {
 // printSubscriptions lists the configured subscriptions with their metadata and
 // the config path, plus the commands that edit them.
 func printSubscriptions(p *paths.Paths, cfg *config.Config) {
-	fmt.Printf("config:   %s\n", p.Config)
-	fmt.Printf("interval: %s\n", cfg.RefreshInterval())
+	line := func(label, value string) string {
+		return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
+	}
+
+	fmt.Print(line("config:   ", p.Config))
+	fmt.Print(line("interval: ", cfg.RefreshInterval().String()))
+
 	if len(cfg.Subscriptions) == 0 {
-		fmt.Println("subs:     none")
+		fmt.Print(line("subs:     ", "none"))
 		fmt.Println("\nadd one with:  zashhomo sub add <url>")
 		return
 	}
-	fmt.Printf("subs:     %d\n\n", len(cfg.Subscriptions))
+
+	fmt.Print(line("subs:     ", fmt.Sprintf("%d", len(cfg.Subscriptions))))
+	fmt.Println()
+
 	for i, s := range cfg.Subscriptions {
 		name := s.Name
 		if name == "" {
 			name = fmt.Sprintf("sub-%d", i)
 		}
-		fmt.Printf("  [%d] %s\n      %s\n", i, name, s.URL)
+		fmt.Printf("  [%d] %s\n", i, theme.OutputValue.Render(name))
+		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
 	}
+
 	fmt.Println("\nedit:  zashhomo sub edit             (open config file)")
 	fmt.Println("       zashhomo sub interval <dur>  (set refresh interval, e.g. 6h)")
 }

@@ -5,6 +5,7 @@
 # Environment overrides:
 #   ZASHHOMO_REPO   owner/repo (default LeeShunEE/zashhomo)
 #   ZASHHOMO_BIN    install dir (default /usr/local/bin)
+#   ZASHHOMO_VERSION  release tag to install (default: latest)
 #   ZASHHOMO_NO_INSTALL=1  download only; skip `zashhomo install`
 set -eu
 
@@ -31,17 +32,31 @@ case "$arch" in
   *) err "unsupported architecture: $arch" ;;
 esac
 
-asset="zashhomo-${os}-${arch}"
-url="https://github.com/${REPO}/releases/latest/download/${asset}"
-
-# Pick a downloader.
+# Pick a downloader. dl writes to a file; fetch writes to stdout.
 if command -v curl >/dev/null 2>&1; then
   dl() { curl -fsSL "$1" -o "$2"; }
+  fetch() { curl -fsSL "$1"; }
 elif command -v wget >/dev/null 2>&1; then
   dl() { wget -qO "$2" "$1"; }
+  fetch() { wget -qO- "$1"; }
 else
   err "need curl or wget"
 fi
+
+# Resolve the release tag. Assets are named with the version embedded
+# (zashhomo-<version>-<os>-<arch>), so we can't use the fixed
+# /releases/latest/download/ path and must look up the tag first.
+version="${ZASHHOMO_VERSION:-}"
+if [ -z "$version" ]; then
+  info "Resolving latest release…"
+  version="$(fetch "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep -m1 '"tag_name"' \
+    | sed -E 's/.*"tag_name" *: *"([^"]+)".*/\1/')"
+  [ -n "$version" ] || err "could not resolve latest release tag"
+fi
+
+asset="zashhomo-${version}-${os}-${arch}"
+url="https://github.com/${REPO}/releases/download/${version}/${asset}"
 
 # Elevate for writes to system dirs when needed.
 SUDO=""

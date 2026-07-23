@@ -4,6 +4,7 @@
 # Environment overrides:
 #   $env:ZASHHOMO_REPO        owner/repo (default LeeShunEE/zashhomo)
 #   $env:ZASHHOMO_BIN         install dir (default %LOCALAPPDATA%\Programs\zashhomo)
+#   $env:ZASHHOMO_VERSION     release tag to install (default: latest)
 #   $env:ZASHHOMO_NO_INSTALL  set to 1 to download only
 $ErrorActionPreference = 'Stop'
 
@@ -19,8 +20,18 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   default { throw "unsupported architecture: $($env:PROCESSOR_ARCHITECTURE)" }
 }
 
-$asset = "zashhomo-windows-$arch.exe"
-$url = "https://github.com/$repo/releases/latest/download/$asset"
+# Resolve the release tag. Assets are named with the version embedded
+# (zashhomo-<version>-windows-<arch>.exe), so we can't use the fixed
+# /releases/latest/download/ path and must look up the tag first.
+$version = if ($env:ZASHHOMO_VERSION) {
+  $env:ZASHHOMO_VERSION
+} else {
+  Info "Resolving latest release..."
+  (Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing).tag_name
+}
+
+$asset = "zashhomo-$version-windows-$arch.exe"
+$url = "https://github.com/$repo/releases/download/$version/$asset"
 $dest = Join-Path $binDir 'zashhomo.exe'
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null

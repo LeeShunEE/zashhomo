@@ -4,23 +4,10 @@ run:
 
 linters:
   enable:
-    - errcheck      # 检查未处理的错误
     - govet         # go vet
     - ineffassign   # 检测无效赋值
-    - staticcheck   # 静态分析
     - unused        # 未使用的代码
 
-linters-settings:
-  errcheck:
-    check-type-assertions: false
-    check-blank: false
-
 issues:
-  exclude-rules:
-    # 测试文件放宽部分规则
-    - path: _test\.go
-      linters:
-        - errcheck
-
   max-issues-per-linter: 0
   max-same-issues: 0

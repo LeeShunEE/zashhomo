@@ -10,6 +10,7 @@ import (
 	"github.com/LeeShunEE/zashhomo/internal/archive"
 	"github.com/LeeShunEE/zashhomo/internal/ghrelease"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
+	"github.com/LeeShunEE/zashhomo/internal/ui"
 )
 
 // MihomoRepo is the upstream mihomo kernel repository.
@@ -23,8 +24,7 @@ func Install(p *paths.Paths, currentVersion string) (tag string, updated bool, e
 	if err != nil {
 		return "", false, fmt.Errorf("core: fetch release: %w", err)
 	}
-	binExists := fileExists(p.MihomoBin())
-	if rel.TagName == currentVersion && binExists {
+	if rel.TagName == currentVersion && fileExists(p.MihomoBin()) {
 		return rel.TagName, false, nil
 	}
 
@@ -32,13 +32,24 @@ func Install(p *paths.Paths, currentVersion string) (tag string, updated bool, e
 	if err != nil {
 		return "", false, err
 	}
-
 	if err := p.EnsureDirs(); err != nil {
 		return "", false, err
 	}
 
+	// Animate this step: spinner while fetching/extracting, progress bar while
+	// downloading. Finalized with the tag on success or "failed" on error.
+	st := ui.NewStage("Installing mihomo kernel")
+	st.Start()
+	defer func() {
+		if err != nil {
+			st.Done("failed")
+		} else {
+			st.Done(fmt.Sprintf("%s ✓", tag))
+		}
+	}()
+
 	dl := filepath.Join(p.Bin, asset.Name)
-	if err := ghrelease.Download(asset.URL, dl); err != nil {
+	if err := st.Download(asset.URL, dl); err != nil {
 		return "", false, fmt.Errorf("core: download %s: %w", asset.Name, err)
 	}
 	defer os.Remove(dl)

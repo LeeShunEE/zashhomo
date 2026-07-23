@@ -18,12 +18,14 @@ import (
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/core"
 	"github.com/LeeShunEE/zashhomo/internal/daemon"
+	"github.com/LeeShunEE/zashhomo/internal/elevate"
 	"github.com/LeeShunEE/zashhomo/internal/ghrelease"
 	"github.com/LeeShunEE/zashhomo/internal/panel"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
 	"github.com/LeeShunEE/zashhomo/internal/selfinstall"
 	"github.com/LeeShunEE/zashhomo/internal/subscription"
 	"github.com/LeeShunEE/zashhomo/internal/svc"
+	"github.com/LeeShunEE/zashhomo/internal/ui"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=<tag>".
@@ -165,6 +167,20 @@ func panelURL(cfg *config.Config) string {
 }
 
 func cmdInstall(args []string) error {
+	// Check for administrator privileges on Windows
+	if !elevate.IsAdmin() {
+		fmt.Fprintln(os.Stderr, "Installing the Windows service requires administrator privileges.")
+		fmt.Fprintln(os.Stderr, "Requesting elevation...")
+
+		// Auto-elevate using UAC
+		if err := elevate.RunElevated(os.Args[1:]); err != nil {
+			return fmt.Errorf("failed to elevate privileges: %w", err)
+		}
+		// The elevated process will handle the installation and exit.
+		// This instance should exit cleanly.
+		return nil
+	}
+
 	mixedPort, webPort, webAddr, err := parseListenFlags("install", args)
 	if err != nil {
 		return err
@@ -179,21 +195,23 @@ func cmdInstall(args []string) error {
 	}
 	applyWebAddr(cfg, webAddr, webPort)
 
-	fmt.Println("• Installing mihomo kernel…")
 	tag, updated, err := core.Install(p, cfg.CoreVersion)
 	if err != nil {
 		return err
 	}
 	cfg.CoreVersion = tag
-	fmt.Printf("  kernel %s (%s)\n", tag, statusWord(updated))
+	if !updated {
+		fmt.Printf("  kernel %s (up to date)\n", tag)
+	}
 
-	fmt.Println("• Installing zashboard panel…")
 	utag, uupdated, err := panel.Install(p, cfg.UIVersion)
 	if err != nil {
 		return err
 	}
 	cfg.UIVersion = utag
-	fmt.Printf("  panel %s (%s)\n", utag, statusWord(uupdated))
+	if !uupdated {
+		fmt.Printf("  panel %s (up to date)\n", utag)
+	}
 
 	fmt.Println("• Writing mihomo config…")
 	if err := subscription.GenerateConfig(p, cfg); err != nil {
@@ -357,7 +375,9 @@ func cmdUpdate(args []string) error {
 			return err
 		}
 		cfg.CoreVersion = tag
-		fmt.Printf("kernel %s (%s)\n", tag, statusWord(updated))
+		if !updated {
+			fmt.Printf("  kernel %s (up to date)\n", tag)
+		}
 	}
 	if doUI || doAll {
 		tag, updated, err := panel.Install(p, cfg.UIVersion)
@@ -365,7 +385,9 @@ func cmdUpdate(args []string) error {
 			return err
 		}
 		cfg.UIVersion = tag
-		fmt.Printf("panel %s (%s)\n", tag, statusWord(updated))
+		if !updated {
+			fmt.Printf("  panel %s (up to date)\n", tag)
+		}
 	}
 	if err := cfg.Save(); err != nil {
 		return err
@@ -388,7 +410,7 @@ func cmdUpdate(args []string) error {
 }
 
 // selfUpdate replaces the running zashhomo binary with the latest release.
-func selfUpdate() error {
+func selfUpdate() (err error) {
 	rel, err := ghrelease.Latest(selfRepo)
 	if err != nil {
 		return fmt.Errorf("self-update: %w", err)
@@ -414,9 +436,20 @@ func selfUpdate() error {
 		return err
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
+
+	st := ui.NewStage("Updating zashhomo")
+	st.Start()
+	defer func() {
+		if err != nil {
+			st.Done("failed")
+		} else {
+			st.Done(fmt.Sprintf("%s ✓", rel.TagName))
+		}
+	}()
+
 	newPath := exe + ".new"
-	if err := ghrelease.Download(asset.URL, newPath); err != nil {
-		return err
+	if err := st.Download(asset.URL, newPath); err != nil {
+		return fmt.Errorf("self-update: download: %w", err)
 	}
 	if runtime.GOOS != "windows" {
 		_ = os.Chmod(newPath, 0o755)
@@ -434,7 +467,7 @@ func selfUpdate() error {
 		return fmt.Errorf("self-update: install new binary: %w", err)
 	}
 	_ = os.Remove(oldPath)
-	fmt.Printf("zashhomo updated to %s (restart the service to apply)\n", rel.TagName)
+	fmt.Println("  restart the service to apply:  zashhomo restart")
 	return nil
 }
 
@@ -499,6 +532,20 @@ func cmdSub(args []string) error {
 }
 
 func cmdUninstall(args []string) error {
+	// Check for administrator privileges on Windows
+	if !elevate.IsAdmin() {
+		fmt.Fprintln(os.Stderr, "Uninstalling the Windows service requires administrator privileges.")
+		fmt.Fprintln(os.Stderr, "Requesting elevation...")
+
+		// Auto-elevate using UAC
+		if err := elevate.RunElevated(os.Args[1:]); err != nil {
+			return fmt.Errorf("failed to elevate privileges: %w", err)
+		}
+		// The elevated process will handle the uninstallation and exit.
+		// This instance should exit cleanly.
+		return nil
+	}
+
 	purge := false
 	for _, a := range args {
 		if a == "--purge" {

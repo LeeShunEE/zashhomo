@@ -125,11 +125,19 @@ type State struct {
 	Running   bool
 }
 
-// GetState reports whether the service is installed and, if so, running. A
-// not-installed service yields the zero State; any other status error is
-// treated as installed-but-status-unknown so the menu still offers control
-// actions rather than hiding them.
+// GetState reports whether the service is installed and, if so, running. The
+// query is performed with the least privilege that still reveals the run state
+// (see platformState) so it is accurate even when called from a non-elevated
+// process such as the interactive menu.
 func GetState() State {
+	return platformState()
+}
+
+// genericState reports state via kardianos's Status(). It is the non-Windows
+// implementation of platformState; a not-installed service yields the zero
+// State and any other status error is treated as installed-but-unknown so the
+// menu still offers control actions rather than hiding them.
+func genericState() State {
 	s, _, err := newService(nil, "")
 	if err != nil {
 		return State{}

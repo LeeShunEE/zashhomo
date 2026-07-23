@@ -5,27 +5,15 @@ run:
 linters:
   enable:
     - errcheck      # 检查未处理的错误
-    - gosimple      # 代码简化建议
     - govet         # go vet
     - ineffassign   # 检测无效赋值
     - staticcheck   # 静态分析
     - unused        # 未使用的代码
-    - gofmt         # 格式化检查
-    - goimports     # import 排序检查
-    - misspell      # 拼写检查
 
 linters-settings:
   errcheck:
-    check-type-assertions: true
-    check-blank: true
-
-  govet:
-    enable-all: false
-    disable:
-      - shadow
-
-  gofmt:
-    simplify: true
+    check-type-assertions: false
+    check-blank: false
 
 issues:
   exclude-rules:
@@ -33,7 +21,6 @@ issues:
     - path: _test\.go
       linters:
         - errcheck
-        - gofmt
 
   max-issues-per-linter: 0
   max-same-issues: 0

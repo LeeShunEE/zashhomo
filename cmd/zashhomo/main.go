@@ -174,8 +174,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `zashhomo — lightweight mihomo supervisor + zashboard panel
 
 Usage:
-  zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR]
+  zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR] [--force]
                               Download kernel+panel, write config, register & start service
+                              (--force replaces an already-installed service without asking)
   zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               Run the daemon in the foreground (used by the service)
   zashhomo -i | interactive   Interactive management console
@@ -265,11 +266,33 @@ func panelURL(cfg *config.Config) string {
 }
 
 func cmdInstall(args []string) error {
-	if elevated, err := ensureElevated("Installing the service", append([]string{"install"}, args...)); err != nil || elevated {
+	// --force replaces an already-installed service. Strip it before the shared
+	// listen-flag parser (which doesn't know it) and before elevation.
+	force, rest := popFlag(args, "--force")
+
+	// Decide whether to replace an existing service here, in the original console —
+	// the elevated child runs hidden and can't prompt. When the user confirms we
+	// carry the decision across the UAC boundary via --force.
+	if !force && svc.GetState().Installed {
+		fmt.Println("The zashhomo service is already installed.")
+		switch strings.ToLower(promptLine("Reinstall / replace it? [y/N]: ")) {
+		case "y", "yes":
+			force = true
+		default:
+			fmt.Println("cancelled")
+			return nil
+		}
+	}
+
+	elevArgs := append([]string{"install"}, rest...)
+	if force {
+		elevArgs = append(elevArgs, "--force")
+	}
+	if elevated, err := ensureElevated("Installing the service", elevArgs); err != nil || elevated {
 		return err
 	}
 
-	mixedPort, webPort, webAddr, err := parseListenFlags("install", args)
+	mixedPort, webPort, webAddr, err := parseListenFlags("install", rest)
 	if err != nil {
 		return err
 	}
@@ -321,6 +344,15 @@ func cmdInstall(args []string) error {
 			fmt.Printf("  installed to %s\n", res.Path)
 		} else {
 			fmt.Printf("  already installed at %s\n", res.Path)
+		}
+	}
+
+	// With --force, remove any existing registration first so the (re)install
+	// doesn't fail with "service already exists".
+	if force && svc.GetState().Installed {
+		fmt.Println("• Removing existing service…")
+		if err := svc.Uninstall(); err != nil {
+			return err
 		}
 	}
 
@@ -784,6 +816,21 @@ func openInEditor(path string) error {
 		return fmt.Errorf("open editor (%s): %w; edit the file directly: %s", name, err, path)
 	}
 	return nil
+}
+
+// popFlag removes every occurrence of name from args, reporting whether it was
+// present. Used to lift a boolean flag out of the argument list before passing
+// the remainder to a parser that doesn't define it.
+func popFlag(args []string, name string) (found bool, rest []string) {
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == name {
+			found = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return found, rest
 }
 
 // firstNonEmpty returns the first non-empty string in vals, or "".

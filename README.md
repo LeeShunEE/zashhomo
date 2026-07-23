@@ -36,8 +36,9 @@ irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 ## 命令
 
 ```
-zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR]
+zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR] [--force]
                               下载内核+面板 → 生成默认配置 → 注册系统服务 → 启动
+                              （服务已存在时会提示是否替换；--force 直接强制替换）
 zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               前台运行守护（服务调用此命令）
 zashhomo -i | interactive     交互式管理菜单（方向键选择命令；非终端下回退为逐行输入）

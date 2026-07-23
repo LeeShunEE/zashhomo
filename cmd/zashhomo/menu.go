@@ -61,6 +61,7 @@ func menuHeader(st svc.State) string {
 
 	cfg, _ := config.Load(paths.New().Config)
 	if cfg != nil {
+		b.WriteString(line("proxy", systemProxyStatus(cfg)))
 		b.WriteString(line("panel", panelURL(cfg)))
 		b.WriteString(line("kernel", orDash(cfg.CoreVersion)))
 		b.WriteString(line("panelv", orDash(cfg.UIVersion)))

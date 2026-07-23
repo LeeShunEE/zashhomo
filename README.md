@@ -40,8 +40,8 @@ zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               下载内核+面板 → 生成默认配置 → 注册系统服务 → 启动
 zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               前台运行守护（服务调用此命令）
-zashhomo -i | interactive     交互式管理控制台（循环输入子命令）
-zashhomo start|stop|restart   控制已安装的服务
+zashhomo -i | interactive     交互式管理菜单（方向键选择命令；非终端下回退为逐行输入）
+zashhomo service start|stop|restart|status   控制已安装的服务（start/stop/restart 需管理员）
 zashhomo status               查看服务状态
 zashhomo update [--core|--ui|--self|--all]   更新组件
 zashhomo sub add <url>        添加订阅

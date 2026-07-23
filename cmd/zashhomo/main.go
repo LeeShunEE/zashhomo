@@ -53,8 +53,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdInstall(args)
 	case "run":
 		return cmdRun(args)
-	case "start", "stop", "restart":
-		return svc.Control(cmd)
+	case "service":
+		return cmdService(args)
 	case "status":
 		return cmdStatus()
 	case "update":
@@ -76,6 +76,45 @@ func dispatch(cmd string, args []string) error {
 	}
 }
 
+// ensureElevated guarantees the current process has administrator privileges for
+// operations that manage the OS service (install/uninstall/start/stop/restart).
+// When already elevated it returns (false, nil) and the caller proceeds. When
+// not, it relaunches this executable via UAC to run cmd exactly and returns
+// (true, nil), signalling the caller to exit cleanly — the elevated instance
+// performs the work. Passing the specific command (rather than reusing os.Args)
+// means elevation triggered from inside the interactive menu runs the chosen
+// action directly instead of reopening the console. On non-Windows platforms
+// IsAdmin() is always true, so this is a no-op.
+func ensureElevated(what string, cmd []string) (elevated bool, err error) {
+	if elevate.IsAdmin() {
+		return false, nil
+	}
+	fmt.Fprintf(os.Stderr, "%s requires administrator privileges.\nRequesting elevation…\n", what)
+	if err := elevate.RunElevated(cmd); err != nil {
+		return false, fmt.Errorf("failed to elevate privileges: %w", err)
+	}
+	return true, nil
+}
+
+// cmdService controls the installed OS service. Lifecycle actions need admin
+// rights, so it checks (and elevates) before touching the service manager.
+func cmdService(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("service: expected 'start', 'stop', 'restart', or 'status'")
+	}
+	switch action := args[0]; action {
+	case "start", "stop", "restart":
+		if elevated, err := ensureElevated("Controlling the service", append([]string{"service"}, args...)); err != nil || elevated {
+			return err
+		}
+		return svc.Control(action)
+	case "status":
+		return cmdStatus()
+	default:
+		return fmt.Errorf("service: unknown subcommand %q (want start|stop|restart|status)", action)
+	}
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `zashhomo — lightweight mihomo supervisor + zashboard panel
 
@@ -85,7 +124,8 @@ Usage:
   zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
                               Run the daemon in the foreground (used by the service)
   zashhomo -i | interactive   Interactive management console
-  zashhomo start|stop|restart Control the installed service
+  zashhomo service start|stop|restart|status
+                              Control the installed service (start/stop/restart need admin)
   zashhomo status             Show service status
   zashhomo update [flags]     Update components (--core --ui --self --all)
   zashhomo sub add <url>      Add a subscription
@@ -167,18 +207,8 @@ func panelURL(cfg *config.Config) string {
 }
 
 func cmdInstall(args []string) error {
-	// Check for administrator privileges on Windows
-	if !elevate.IsAdmin() {
-		fmt.Fprintln(os.Stderr, "Installing the Windows service requires administrator privileges.")
-		fmt.Fprintln(os.Stderr, "Requesting elevation...")
-
-		// Auto-elevate using UAC
-		if err := elevate.RunElevated(os.Args[1:]); err != nil {
-			return fmt.Errorf("failed to elevate privileges: %w", err)
-		}
-		// The elevated process will handle the installation and exit.
-		// This instance should exit cleanly.
-		return nil
+	if elevated, err := ensureElevated("Installing the service", append([]string{"install"}, args...)); err != nil || elevated {
+		return err
 	}
 
 	mixedPort, webPort, webAddr, err := parseListenFlags("install", args)
@@ -286,7 +316,59 @@ func cmdRun(args []string) error {
 // cmdInteractive runs a read-eval loop over the regular subcommands — a
 // lightweight management console. The daemon itself is run by the installed
 // service (or `zashhomo run`); here the user just issues management commands.
-func cmdInteractive(_ []string) error {
+func cmdInteractive(args []string) error {
+	// The arrow-key menu needs a real terminal for both reading keys and
+	// rendering. When stdin/stdout are redirected (pipes, CI, tests) fall back
+	// to the line-based console below.
+	if ui.IsTerminal(os.Stdin) && ui.IsTerminal(os.Stdout) {
+		return cmdMenu(args)
+	}
+	return cmdConsoleLine(args)
+}
+
+// cmdMenu runs the arrow-key management menu, looping until the user exits.
+// Each selection tears down the menu (alt screen), runs the command so its
+// normal stdout/spinners render on the main screen, then returns to the menu.
+func cmdMenu(_ []string) error {
+	fmt.Printf("%s\n\n", menuBanner())
+	_ = dispatch("status", nil)
+	for {
+		action, err := runMenu()
+		if err != nil {
+			return err
+		}
+		if action == "" || action == "exit" {
+			return nil
+		}
+		fmt.Println()
+		if action == "sub-add" {
+			url := promptLine("Subscription URL (blank to cancel): ")
+			if url == "" {
+				fmt.Println("cancelled")
+			} else if err := dispatch("sub", []string{"add", url}); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+		} else {
+			fields := strings.Fields(action)
+			if err := dispatch(fields[0], fields[1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			}
+		}
+		fmt.Println()
+		promptLine("Press Enter to return to the menu… ")
+	}
+}
+
+// promptLine prints a prompt and reads one trimmed line from stdin.
+func promptLine(prompt string) string {
+	fmt.Print(prompt)
+	r := bufio.NewReader(os.Stdin)
+	line, _ := r.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+// cmdConsoleLine is the legacy line-based console, kept as a non-TTY fallback.
+func cmdConsoleLine(_ []string) error {
 	fmt.Printf("zashhomo %s — interactive console. Type 'help' for commands, 'exit' to quit.\n\n", version)
 	_ = dispatch("status", nil)
 	fmt.Println()
@@ -404,7 +486,7 @@ func cmdUpdate(args []string) error {
 		}
 	}
 	if (doCore || doUI || doAll) && !doSelf {
-		fmt.Println("restart the service to apply:  zashhomo restart")
+		fmt.Println("restart the service to apply:  zashhomo service restart")
 	}
 	return nil
 }
@@ -467,7 +549,7 @@ func selfUpdate() (err error) {
 		return fmt.Errorf("self-update: install new binary: %w", err)
 	}
 	_ = os.Remove(oldPath)
-	fmt.Println("  restart the service to apply:  zashhomo restart")
+	fmt.Println("  restart the service to apply:  zashhomo service restart")
 	return nil
 }
 
@@ -512,7 +594,7 @@ func cmdSub(args []string) error {
 		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
 			fmt.Println("kernel reloaded")
 		} else {
-			fmt.Println("run `zashhomo restart` (or start the service) to apply")
+			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
 		}
 		return nil
 
@@ -532,18 +614,8 @@ func cmdSub(args []string) error {
 }
 
 func cmdUninstall(args []string) error {
-	// Check for administrator privileges on Windows
-	if !elevate.IsAdmin() {
-		fmt.Fprintln(os.Stderr, "Uninstalling the Windows service requires administrator privileges.")
-		fmt.Fprintln(os.Stderr, "Requesting elevation...")
-
-		// Auto-elevate using UAC
-		if err := elevate.RunElevated(os.Args[1:]); err != nil {
-			return fmt.Errorf("failed to elevate privileges: %w", err)
-		}
-		// The elevated process will handle the uninstallation and exit.
-		// This instance should exit cleanly.
-		return nil
+	if elevated, err := ensureElevated("Uninstalling the service", append([]string{"uninstall"}, args...)); err != nil || elevated {
+		return err
 	}
 
 	purge := false

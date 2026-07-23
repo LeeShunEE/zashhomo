@@ -4,6 +4,8 @@
 [zashboard](https://github.com/Zephyruso/zashboard) Web 面板。一个 <15MB 的静态单二进制，
 一行命令即可装好内核 + 面板并常驻守护。
 
+![](assets/image.png)
+
 ## 特性
 
 - **进程守护**：启动、健康检查（Clash `/version`）、崩溃指数退避自动重启（1s→30s）。

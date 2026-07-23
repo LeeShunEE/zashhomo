@@ -133,12 +133,19 @@ func dispatch(cmd string, args []string) error {
 // (true, nil), signalling the caller to exit cleanly — the elevated instance
 // performs the work. Passing the specific command (rather than reusing os.Args)
 // means elevation triggered from inside the interactive menu runs the chosen
-// action directly instead of reopening the console. On non-Windows platforms
-// IsAdmin() is always true, so this is a no-op.
+// action directly instead of reopening the console. On Unix platforms, if the
+// user lacks root privileges, it returns a clear error with sudo instructions.
 func ensureElevated(what string, cmd []string) (elevated bool, err error) {
 	if elevate.IsAdmin() {
 		return false, nil
 	}
+
+	// On Unix, provide clear guidance instead of auto-elevation
+	if runtime.GOOS != "windows" {
+		return false, fmt.Errorf("%s requires root privileges.\nPlease run with: sudo zashhomo %s", what, strings.Join(cmd, " "))
+	}
+
+	// Windows: UAC auto-elevation
 	fmt.Fprintf(os.Stderr, "%s requires administrator privileges.\nRequesting elevation…\n", what)
 	if err := elevate.RunElevated(cmd); err != nil {
 		// When the elevated child already relayed its own error, pass the
@@ -852,7 +859,13 @@ func openInEditor(path string) error {
 		case "darwin":
 			name, args = "open", []string{"-t", path}
 		default:
-			name, args = "xdg-open", []string{path}
+			// Linux/BSD: check if xdg-open exists before using it
+			if _, err := exec.LookPath("xdg-open"); err == nil {
+				name, args = "xdg-open", []string{path}
+			} else {
+				// No GUI available - provide helpful error message
+				return fmt.Errorf("no editor found. Set $VISUAL or $EDITOR, or edit the file directly:\n  %s", path)
+			}
 		}
 	}
 	cmd := exec.Command(name, args...)

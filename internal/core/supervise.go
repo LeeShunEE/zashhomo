@@ -33,6 +33,12 @@ func (s *Supervisor) logf(format string, args ...any) {
 // Run supervises mihomo until ctx is cancelled. It restarts the kernel on
 // crash or repeated health-check failure with exponential backoff (1s..30s).
 func (s *Supervisor) Run(ctx context.Context) error {
+	// Clean up any orphaned kernel processes from a previous hard crash
+	// (primarily for macOS, which lacks Pdeathsig)
+	if err := killOrphanKernels(s.BinPath); err != nil {
+		s.logf("warning: could not clean orphan kernels: %v", err)
+	}
+
 	const maxBackoff = 30 * time.Second
 	backoff := time.Second
 	for {

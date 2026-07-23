@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: build & vet
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,20 +18,42 @@ jobs:
           go-version: '1.24'
           check-latest: true
 
-      - name: Verify formatting
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  build:
+    name: build & test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Test with coverage
         run: |
-          fmtout="$(gofmt -l cmd internal)"
-          if [ -n "$fmtout" ]; then
-            echo "These files are not gofmt-clean:"
-            echo "$fmtout"
+          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out
+
+      - name: Coverage gate
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          if [ "$COVERAGE" -lt 25 ]; then
+            echo "Coverage ${COVERAGE}% is below threshold 25%"
             exit 1
           fi
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test -race ./...
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
 
       - name: Build
         env:
@@ -41,17 +63,15 @@ jobs:
   cross:
     name: cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux builds - temporarily disabled
-          # - { goos: linux,   goarch: amd64 }
-          # - { goos: linux,   goarch: arm64 }
-          # macOS builds - temporarily disabled
-          # - { goos: darwin,  goarch: amd64 }
-          # - { goos: darwin,  goarch: arm64 }
-          # Windows builds - currently supported
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
     steps:

@@ -2,16 +2,24 @@
 
 package elevate
 
-// IsAdmin returns true on non-Windows platforms.
-// Service installation on Unix-like systems typically uses sudo or
-// runs as root already, so we don't implement auto-elevation.
+import (
+	"errors"
+	"os"
+)
+
+// ErrNeedsElevation signals that the operation requires elevated privileges.
+var ErrNeedsElevation = errors.New("operation requires elevated privileges")
+
+// IsAdmin returns true if the current process runs as root (uid 0).
+// On Unix systems, this checks the effective UID to determine if the process
+// has the necessary privileges for system-level service installation.
 func IsAdmin() bool {
-	return true
+	return os.Geteuid() == 0
 }
 
-// RunElevated is a no-op on non-Windows platforms.
-// Users should run the install command with appropriate privileges
-// (e.g., via sudo).
+// RunElevated returns an error indicating manual elevation is needed.
+// Unlike Windows, Unix systems don't have a programmatic UAC equivalent;
+// users must re-run with sudo.
 func RunElevated(args []string) error {
-	return nil
+	return ErrNeedsElevation
 }

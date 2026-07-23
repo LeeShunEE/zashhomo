@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 文档
+    url: https://github.com/LeeShunEE/zashhomo#readme
+    about: 请先阅读 README 了解使用方法
+  - name: 💬 讨论
+    url: https://github.com/LeeShunEE/zashhomo/discussions
+    about: 一般问题请在 Discussions 中讨论

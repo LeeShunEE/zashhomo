@@ -2,6 +2,17 @@
 
 本文档说明如何发布新版本。
 
+## 工作流触发机制
+
+本项目使用两个独立的工作流：
+
+| 工作流 | 触发条件 | 运行内容 |
+|--------|----------|----------|
+| **CI** | 推送到 `main` 分支<br>Pull Request<br>手动触发 | ✅ 代码格式检查 (`gofmt`)<br>✅ 静态分析 (`go vet`)<br>✅ 单元测试 (`go test -race`)<br>✅ 交叉编译验证 |
+| **Release** | 推送 `v*` 标签<br>手动触发 | ✅ 构建发布产物<br>✅ 上传 Artifacts<br>✅ 创建 GitHub Release<br>✅ 生成 SHA256 校验和 |
+
+> **关键点**：推送标签时只触发 **Release** 工作流，不会重复运行 CI 测试。
+
 ## 发版流程
 
 ### 1. 确保代码已合并到 main
@@ -10,10 +21,19 @@ git checkout main
 git pull origin main
 ```
 
-### 2. 更新版本信息（可选）
+### 2. 验证 CI 通过
+推送代码到 `main` 后，CI 工作流会自动运行：
+- 格式检查
+- 静态分析
+- 单元测试
+- 交叉编译验证
+
+在 GitHub Actions 页面确认所有检查通过后再继续。
+
+### 3. 更新版本信息（可选）
 如有需要，更新 README.md、CHANGELOG.md 等文档。
 
-### 3. 创建版本标签
+### 4. 创建版本标签
 ```bash
 # 创建带注释的标签（推荐）
 git tag -a v1.0.0 -m "Release v1.0.0: 简短描述"
@@ -22,17 +42,16 @@ git tag -a v1.0.0 -m "Release v1.0.0: 简短描述"
 git tag v1.0.0
 ```
 
-### 4. 推送标签到远程
+### 5. 推送标签到远程
 ```bash
 git push origin v1.0.0
 ```
 
-### 5. 自动发布
-推送标签后，GitHub Actions 会自动：
-1. 运行完整测试套件
-2. 交叉编译 6 个平台版本
-3. 生成 SHA256 校验和
-4. 创建 GitHub Release 并上传所有产物
+### 6. 自动发布
+推送标签后，GitHub Actions Release 工作流会自动：
+1. 构建 Windows 平台二进制文件（amd64 + arm64）
+2. 生成 SHA256 校验和
+3. 创建 GitHub Release 并上传所有产物
 
 ## 版本命名规范
 

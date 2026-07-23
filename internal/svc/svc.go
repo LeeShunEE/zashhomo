@@ -51,19 +51,25 @@ func (p *program) Stop(s service.Service) error {
 }
 
 // config builds the service definition. The service invokes "zashhomo run".
-func config() *service.Config {
-	return &service.Config{
+// When exePath is non-empty the service targets that binary explicitly, so it
+// keeps working regardless of where the installing process was launched from.
+func config(exePath string) *service.Config {
+	c := &service.Config{
 		Name:        serviceName,
 		DisplayName: serviceDisplayName,
 		Description: serviceDescription,
 		Arguments:   []string{"run"},
 	}
+	if exePath != "" {
+		c.Executable = exePath
+	}
+	return c
 }
 
 // newService constructs the service around run (run may be nil for control-only).
-func newService(run RunFunc) (service.Service, *program, error) {
+func newService(run RunFunc, exePath string) (service.Service, *program, error) {
 	prog := &program{run: run}
-	s, err := service.New(prog, config())
+	s, err := service.New(prog, config(exePath))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,7 +80,7 @@ func newService(run RunFunc) (service.Service, *program, error) {
 // (e.g. `zashhomo run` in a terminal) it runs in the foreground; under the
 // service manager it integrates with start/stop control.
 func Run(run RunFunc) error {
-	s, _, err := newService(run)
+	s, _, err := newService(run, "")
 	if err != nil {
 		return err
 	}
@@ -84,7 +90,7 @@ func Run(run RunFunc) error {
 // Control performs a service lifecycle action: install, uninstall, start, stop,
 // restart. "status" is handled by Status.
 func Control(action string) error {
-	s, _, err := newService(nil)
+	s, _, err := newService(nil, "")
 	if err != nil {
 		return err
 	}
@@ -93,7 +99,7 @@ func Control(action string) error {
 
 // Status returns a human-readable service status string.
 func Status() (string, error) {
-	s, _, err := newService(nil)
+	s, _, err := newService(nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -116,12 +122,17 @@ func Platform() string {
 	return service.Platform()
 }
 
-// Install registers and starts the service.
-func Install() error {
-	if err := Control("install"); err != nil {
+// Install registers and starts the service. When exePath is non-empty the
+// service is bound to that binary path.
+func Install(exePath string) error {
+	s, _, err := newService(nil, exePath)
+	if err != nil {
+		return err
+	}
+	if err := service.Control(s, "install"); err != nil {
 		return fmt.Errorf("install service: %w", err)
 	}
-	if err := Control("start"); err != nil {
+	if err := service.Control(s, "start"); err != nil {
 		return fmt.Errorf("start service: %w", err)
 	}
 	return nil

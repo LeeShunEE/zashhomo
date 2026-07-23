@@ -121,3 +121,38 @@ func (p *Paths) ProvidersDir() string {
 func (p *Paths) UIIndex() string {
 	return filepath.Join(p.UI, "index.html")
 }
+
+// selfBinName is the canonical name of the installed zashhomo executable.
+func selfBinName() string {
+	if runtime.GOOS == "windows" {
+		return "zashhomo.exe"
+	}
+	return "zashhomo"
+}
+
+// InstallDir returns the directory the zashhomo executable is installed into and
+// which should be on the user's PATH. Can be overridden with ZASHHOMO_BIN.
+func InstallDir() string {
+	if v := os.Getenv("ZASHHOMO_BIN"); v != "" {
+		return v
+	}
+	switch runtime.GOOS {
+	case "windows":
+		la := os.Getenv("LOCALAPPDATA")
+		if la == "" {
+			la = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(la, "Programs", "zashhomo")
+	default:
+		if isRoot() {
+			return "/usr/local/bin"
+		}
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".local", "bin")
+	}
+}
+
+// SelfExe returns the canonical full path of the installed zashhomo executable.
+func SelfExe() string {
+	return filepath.Join(InstallDir(), selfBinName())
+}

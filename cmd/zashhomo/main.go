@@ -18,6 +18,7 @@ import (
 	"github.com/zashhomo/zashhomo/internal/ghrelease"
 	"github.com/zashhomo/zashhomo/internal/panel"
 	"github.com/zashhomo/zashhomo/internal/paths"
+	"github.com/zashhomo/zashhomo/internal/selfinstall"
 	"github.com/zashhomo/zashhomo/internal/subscription"
 	"github.com/zashhomo/zashhomo/internal/svc"
 )
@@ -133,12 +134,30 @@ func cmdInstall(_ []string) error {
 		return err
 	}
 
+	// Register `zashhomo` as a global CLI and pin the service to a stable path.
+	fmt.Println("• Registering global `zashhomo` command…")
+	exePath := ""
+	res, err := selfinstall.EnsureInstalled()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not install to PATH (%v); using current binary\n", err)
+	} else {
+		exePath = res.Path
+		if res.Copied {
+			fmt.Printf("  installed to %s\n", res.Path)
+		} else {
+			fmt.Printf("  already installed at %s\n", res.Path)
+		}
+	}
+
 	fmt.Printf("• Registering service (%s)…\n", svc.Platform())
-	if err := svc.Install(); err != nil {
+	if err := svc.Install(exePath); err != nil {
 		return err
 	}
 
 	fmt.Printf("\n✓ Installed. Open the panel at http://%s\n", cfg.WebAddr)
+	if res.PathNote != "" {
+		fmt.Printf("  note: %s\n", res.PathNote)
+	}
 	if len(cfg.Subscriptions) == 0 {
 		fmt.Println("  Add a subscription:  zashhomo sub add <url>")
 	}
@@ -361,6 +380,11 @@ func cmdUninstall(args []string) error {
 		fmt.Fprintln(os.Stderr, "warning:", err)
 	}
 	fmt.Println("service removed")
+	if err := selfinstall.Uninstall(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: %v (remove it manually if desired)\n", err)
+	} else {
+		fmt.Println("global command removed")
+	}
 	if purge {
 		p := paths.New()
 		for _, dir := range []string{p.Data, filepath.Dir(p.Config)} {

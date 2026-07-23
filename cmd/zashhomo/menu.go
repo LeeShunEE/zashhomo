@@ -58,6 +58,7 @@ func menuHeader(st svc.State) string {
 		return theme.Label.Render(fmt.Sprintf("%-8s", label)) + val + "\n"
 	}
 	b.WriteString(line("service", style.Render(dot+" "+word)))
+	b.WriteString(line("version", version))
 
 	cfg, _ := config.Load(paths.New().Config)
 	if cfg != nil {

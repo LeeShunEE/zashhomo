@@ -573,6 +573,7 @@ func cmdStatus() error {
 	}
 
 	fmt.Print(line("service: ", stStyle.Render(st)+" ("+svc.Platform()+")"))
+	fmt.Print(line("version: ", version))
 	if cfg != nil {
 		fmt.Print(line("proxy:   ", systemProxyStatus(cfg)))
 		fmt.Print(line("mixed:   ", mixedProxyURL(cfg)))

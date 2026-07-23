@@ -28,6 +28,7 @@ import (
 	"github.com/LeeShunEE/zashhomo/internal/selfinstall"
 	"github.com/LeeShunEE/zashhomo/internal/subscription"
 	"github.com/LeeShunEE/zashhomo/internal/svc"
+	"github.com/LeeShunEE/zashhomo/internal/sysproxy"
 	"github.com/LeeShunEE/zashhomo/internal/ui"
 )
 
@@ -111,6 +112,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdUpdate(args)
 	case "sub":
 		return cmdSub(args)
+	case "system-proxy", "sysproxy":
+		return cmdSystemProxy(args)
 	case "uninstall":
 		return cmdUninstall(args)
 	case "version", "-v", "--version":
@@ -190,6 +193,8 @@ Usage:
   zashhomo service start|stop|restart|status
                               Control the installed service (start/stop/restart need admin)
   zashhomo status             Show service status
+  zashhomo system-proxy enable|disable
+                              Set or clear the OS system proxy (points at the mixed-port)
   zashhomo update [flags]     Update components (--core --ui --self --all)
   zashhomo sub add <url>      Add a subscription
   zashhomo sub remove <index> Remove the subscription at <index> (see 'sub list')
@@ -561,12 +566,72 @@ func cmdStatus() error {
 
 	fmt.Print(line("service: ", stStyle.Render(st)+" ("+svc.Platform()+")"))
 	if cfg != nil {
+		fmt.Print(line("proxy:   ", systemProxyStatus(cfg)))
 		fmt.Print(line("panel:   ", panelURL(cfg)))
 		fmt.Print(line("kernel:  ", orDash(cfg.CoreVersion)))
 		fmt.Print(line("panelv:  ", orDash(cfg.UIVersion)))
 		fmt.Print(line("subs:    ", fmt.Sprintf("%d", len(cfg.Subscriptions))))
 	}
 	return nil
+}
+
+// systemProxyStatus renders the live system-proxy state for the status block. It
+// queries the OS directly so a proxy toggled outside zashhomo is still reflected,
+// falling back to the persisted intent when the query is unavailable.
+func systemProxyStatus(cfg *config.Config) string {
+	st, err := sysproxy.Get()
+	if err != nil {
+		if cfg.SystemProxy {
+			return theme.StatusWarn.Render("managed (query failed)")
+		}
+		return "disabled"
+	}
+	if st.Enabled {
+		server := st.Server
+		if server == "" {
+			server = fmt.Sprintf("127.0.0.1:%d", cfg.MixedPort)
+		}
+		return theme.StatusOk.Render("enabled") + " (" + server + ")"
+	}
+	return "disabled"
+}
+
+// cmdSystemProxy enables or disables the OS system proxy, pointing it at the
+// configured mixed-port, and records the choice in the config so the daemon can
+// restore it on the next service start.
+func cmdSystemProxy(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("system-proxy: expected 'enable' or 'disable'")
+	}
+	p := paths.New()
+	cfg, err := loadOrInit(p)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "enable", "on":
+		if err := sysproxy.Enable("127.0.0.1", cfg.MixedPort); err != nil {
+			return err
+		}
+		cfg.SystemProxy = true
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("system proxy enabled (127.0.0.1:%d)\n", cfg.MixedPort)
+		return nil
+	case "disable", "off":
+		if err := sysproxy.Disable(); err != nil {
+			return err
+		}
+		cfg.SystemProxy = false
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Println("system proxy disabled")
+		return nil
+	default:
+		return fmt.Errorf("system-proxy: unknown subcommand %q (want enable|disable)", args[0])
+	}
 }
 
 func cmdUpdate(args []string) error {

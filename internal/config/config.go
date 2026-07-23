@@ -33,6 +33,10 @@ type Config struct {
 	Subscriptions []Subscription `yaml:"subscriptions"`
 	// SubInterval is how often subscriptions refresh (Go duration string).
 	SubInterval string `yaml:"sub_interval"`
+	// SystemProxy records whether zashhomo manages the OS system proxy, pointing
+	// it at the mixed-port. When true the daemon enables it on start and clears
+	// it on stop.
+	SystemProxy bool `yaml:"system_proxy"`
 	// CoreVersion / UIVersion record the installed component versions.
 	CoreVersion string `yaml:"core_version"`
 	UIVersion   string `yaml:"ui_version"`

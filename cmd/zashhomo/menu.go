@@ -61,6 +61,7 @@ func menuHeader(st svc.State) string {
 
 	cfg, _ := config.Load(paths.New().Config)
 	if cfg != nil {
+		b.WriteString(line("proxy", systemProxyStatus(cfg)))
 		b.WriteString(line("panel", panelURL(cfg)))
 		b.WriteString(line("kernel", orDash(cfg.CoreVersion)))
 		b.WriteString(line("panelv", orDash(cfg.UIVersion)))
@@ -99,7 +100,6 @@ func subscriptionMenu() []menuItem {
 // don't apply yet are greyed with a reason. Items whose commands need free-form
 // input (a subscription URL) use a sentinel action handled by cmdInteractive.
 func rootMenu(st svc.State) []menuItem {
-	status := menuItem{label: "Status", action: "status"}
 	install := menuItem{label: "Install (defaults)", action: "install"}
 	start := menuItem{label: "Start service", action: "service start"}
 	stop := menuItem{label: "Stop service", action: "service stop"}
@@ -117,6 +117,10 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Update & reload", action: "sub update"},
 		{label: "Set refresh interval…", action: "sub-interval"},
 		{label: "Open config file", action: "sub edit"},
+	}}
+	sysProxy := menuItem{label: "System proxy ▸", sub: []menuItem{
+		{label: "Enable system proxy", action: "system-proxy enable"},
+		{label: "Disable system proxy", action: "system-proxy disable"},
 	}}
 	uninstall := menuItem{label: "Uninstall", action: "uninstall"}
 	version := menuItem{label: "Version", action: "version"}
@@ -139,11 +143,11 @@ func rootMenu(st svc.State) []menuItem {
 	// Order so the obvious next step leads.
 	switch {
 	case !st.Installed:
-		return []menuItem{install, status, subs, update, start, stop, restart, uninstall, version, help, exit}
+		return []menuItem{install, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
 	case !st.Running:
-		return []menuItem{start, status, restart, stop, subs, update, install, uninstall, version, help, exit}
+		return []menuItem{start, restart, stop, subs, sysProxy, update, install, uninstall, version, help, exit}
 	default:
-		return []menuItem{status, stop, restart, start, subs, update, install, uninstall, version, help, exit}
+		return []menuItem{stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
 	}
 }
 

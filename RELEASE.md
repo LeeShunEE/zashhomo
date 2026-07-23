@@ -4,6 +4,14 @@
 
 ## 更新日志
 
+### Unreleased
+
+**新功能：system-proxy**
+- 新增 `zashhomo system-proxy enable|disable` 命令，一键开启/关闭系统代理（指向 mixed-port）
+- 跨平台实现：Windows 写 WinINET 注册表并广播刷新；macOS 调用 `networksetup`；Linux 使用 GNOME `gsettings`
+- `zashhomo status` 与交互式菜单展示系统代理状态
+- 新增配置项 `system_proxy`；启用后守护进程启动时自动开启、停止时自动关闭
+
 ### v0.3.0 (2025-07-23)
 
 **开源仓库完善**

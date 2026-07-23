@@ -39,6 +39,7 @@ zashhomo run [--mixed-port N] [--web-port N] [--web-addr ADDR]
 zashhomo -i | interactive     Interactive management menu (arrow keys; falls back to line input in non-TTY)
 zashhomo service start|stop|restart|status   Control installed service (start/stop/restart require admin)
 zashhomo status               Show service status
+zashhomo system-proxy enable|disable   Set/clear the OS system proxy (points at mixed-port)
 zashhomo update [--core|--ui|--self|--all]   Update components
 zashhomo sub add <url>        Add subscription
 zashhomo sub list             List subscriptions (metadata + edit hint)

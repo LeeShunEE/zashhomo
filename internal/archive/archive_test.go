@@ -147,7 +147,7 @@ func TestBaseContainsAll(t *testing.T) {
 		{"mihomo-linux-amd64.gz", []string{"mihomo", "linux"}, true},
 		{"mihomo-linux-amd64.gz", []string{"windows"}, false},
 		{"MIHOMO-LINUX-AMD64.GZ", []string{"mihomo", "linux"}, true}, // case-insensitive
-		{"file.zip", []string{}, true}, // empty tokens
+		{"file.zip", []string{}, true},                               // empty tokens
 	}
 
 	for _, tt := range tests {

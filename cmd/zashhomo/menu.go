@@ -84,11 +84,8 @@ func subscriptionMenu() []menuItem {
 		if name == "" {
 			name = fmt.Sprintf("sub-%d", i)
 		}
-		// Display name and truncated URL
-		url := sub.URL
-		if len(url) > 50 {
-			url = url[:47] + "..."
-		}
+		// Display name
+			_ = sub.URL // URL available but not shown in menu
 		items = append(items, menuItem{
 			label:  name,
 			action: fmt.Sprintf("sub show %d", i),

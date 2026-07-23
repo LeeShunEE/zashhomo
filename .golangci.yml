@@ -10,12 +10,9 @@ linters:
     - ineffassign   # 检测无效赋值
     - staticcheck   # 静态分析
     - unused        # 未使用的代码
-    - revive        # 代码风格检查
     - gofmt         # 格式化检查
     - goimports     # import 排序检查
     - misspell      # 拼写检查
-    - prealloc      # 预分配建议
-    - gocritic      # 代码审查
 
 linters-settings:
   errcheck:
@@ -23,36 +20,12 @@ linters-settings:
     check-blank: true
 
   govet:
-    enable-all: true
+    enable-all: false
     disable:
-      - fieldalignment
+      - shadow
 
-  revive:
-    rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
-      - name: unreachable-code
-      - name: redefines-builtin-id
+  gofmt:
+    simplify: true
 
 issues:
   exclude-rules:

@@ -4,7 +4,7 @@
 
 ## 更新日志
 
-### Unreleased
+### v0.4.0 (2026-07-23)
 
 **新功能：system-proxy**
 - 新增 `zashhomo system-proxy enable|disable` 命令，一键开启/关闭系统代理（指向 mixed-port）

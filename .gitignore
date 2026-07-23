@@ -1,0 +1,14 @@
+# Build output
+/dist/
+*.exe
+*.old
+*.new
+
+# Local Go toolchain / caches
+/go.sum.bak
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log

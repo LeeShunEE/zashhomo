@@ -5,8 +5,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -35,14 +37,61 @@ var version = "dev"
 const selfRepo = "LeeShunEE/zashhomo"
 
 func main() {
-	if len(os.Args) < 2 {
+	args := applyElevatedLog(os.Args[1:])
+	if len(args) < 1 {
 		usage()
 		os.Exit(2)
 	}
-	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	if err := dispatch(args[0], args[1:]); err != nil {
+		printCmdError(err)
 		os.Exit(1)
 	}
+}
+
+// printCmdError reports err on stderr unless the elevated child already relayed
+// its own message (ErrChildReported), in which case a second line is just noise.
+func printCmdError(err error) {
+	if err == nil || errors.Is(err, elevate.ErrChildReported) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+}
+
+// clearScreen wipes the terminal, including scrollback, so each interactive
+// action starts on a clean screen instead of scrolling past prior output.
+func clearScreen() { fmt.Print("\033[H\033[2J\033[3J") }
+
+// applyElevatedLog handles the private --elevated-log <path> flag set by the
+// Windows UAC relauncher: it redirects this process's stdout/stderr (and the
+// standard logger) to that file so the non-elevated parent can print them in
+// the original console, then returns args with the flag removed. When the flag
+// is absent — the normal case, and always on non-Windows — args are unchanged.
+func applyElevatedLog(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		path := ""
+		switch {
+		case a == elevate.ElevatedLogFlag:
+			if i+1 < len(args) {
+				path = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, elevate.ElevatedLogFlag+"="):
+			path = strings.TrimPrefix(a, elevate.ElevatedLogFlag+"=")
+		default:
+			out = append(out, a)
+			continue
+		}
+		if path != "" {
+			if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+				os.Stdout = f
+				os.Stderr = f
+				log.SetOutput(f)
+			}
+		}
+	}
+	return out
 }
 
 // dispatch executes a single command (cmd with args). It does not call os.Exit,
@@ -91,6 +140,11 @@ func ensureElevated(what string, cmd []string) (elevated bool, err error) {
 	}
 	fmt.Fprintf(os.Stderr, "%s requires administrator privileges.\nRequesting elevation…\n", what)
 	if err := elevate.RunElevated(cmd); err != nil {
+		// When the elevated child already relayed its own error, pass the
+		// sentinel through unwrapped so the caller can stay quiet.
+		if errors.Is(err, elevate.ErrChildReported) {
+			return false, err
+		}
 		return false, fmt.Errorf("failed to elevate privileges: %w", err)
 	}
 	return true, nil
@@ -330,6 +384,7 @@ func cmdInteractive(args []string) error {
 // Each selection tears down the menu (alt screen), runs the command so its
 // normal stdout/spinners render on the main screen, then returns to the menu.
 func cmdMenu(_ []string) error {
+	clearScreen()
 	fmt.Printf("%s\n\n", menuBanner())
 	_ = dispatch("status", nil)
 	for {
@@ -340,18 +395,18 @@ func cmdMenu(_ []string) error {
 		if action == "" || action == "exit" {
 			return nil
 		}
-		fmt.Println()
+		clearScreen()
 		if action == "sub-add" {
 			url := promptLine("Subscription URL (blank to cancel): ")
 			if url == "" {
 				fmt.Println("cancelled")
 			} else if err := dispatch("sub", []string{"add", url}); err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				printCmdError(err)
 			}
 		} else {
 			fields := strings.Fields(action)
 			if err := dispatch(fields[0], fields[1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				printCmdError(err)
 			}
 		}
 		fmt.Println()
@@ -403,7 +458,7 @@ func cmdConsoleLine(_ []string) error {
 			continue
 		}
 		if err := dispatch(fields[0], fields[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			printCmdError(err)
 		}
 	}
 }

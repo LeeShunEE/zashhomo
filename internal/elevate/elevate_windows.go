@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // IsAdmin returns true if the current process has administrator privileges.
@@ -18,45 +20,103 @@ func IsAdmin() bool {
 	return ret != 0
 }
 
-// RunElevated re-launches the current executable with UAC elevation.
-// It uses ShellExecuteW with the "runas" verb to trigger the UAC prompt.
+// shellExecuteInfo mirrors the Win32 SHELLEXECUTEINFOW structure. Field order
+// and 64-bit padding match the C layout so cbSize == unsafe.Sizeof(sei).
+type shellExecuteInfo struct {
+	cbSize        uint32
+	fMask         uint32
+	hwnd          uintptr
+	verb          *uint16
+	file          *uint16
+	parameters    *uint16
+	directory     *uint16
+	show          int32
+	instApp       uintptr
+	idList        uintptr
+	class         *uint16
+	hkeyClass     uintptr
+	hotKey        uint32
+	iconOrMonitor uintptr
+	process       uintptr
+}
+
+const (
+	seeMaskNoCloseProcess = 0x00000040 // keep hProcess valid so we can wait on it
+	swHide                = 0          // SW_HIDE: no visible window for the child
+)
+
+// RunElevated re-launches the current executable with UAC elevation via the
+// "runas" verb. The elevated child runs hidden (no new console window); its
+// stdout/stderr are redirected to a temp file (see ElevatedLogFlag). This
+// process waits for the child to finish, prints its captured output in the
+// current console, and returns the child's exit status.
 func RunElevated(args []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	shell32 := syscall.NewLazyDLL("shell32.dll")
-	shellExecuteW := shell32.NewProc("ShellExecuteW")
+	// Temp file the elevated child writes its output to, which we relay here.
+	logf, err := os.CreateTemp("", "zashhomo-elevated-*.log")
+	if err != nil {
+		return fmt.Errorf("create elevation log: %w", err)
+	}
+	logPath := logf.Name()
+	logf.Close()
+	defer os.Remove(logPath)
 
-	// Build command line arguments
+	// Append the private flag telling the child where to write its output.
+	full := append(append([]string{}, args...), ElevatedLogFlag, logPath)
 	var params string
-	for _, arg := range args {
-		params += " " + syscall.EscapeArg(arg)
+	for _, a := range full {
+		params += " " + syscall.EscapeArg(a)
 	}
 	params = strings.TrimSpace(params)
 
-	// ShellExecuteW(NULL, "runas", exe, params, NULL, SW_SHOWNORMAL)
-	// Parameters:
-	//   hwnd         - handle to parent window (0 = no parent)
-	//   lpOperation  - "runas" to trigger UAC elevation
-	//   lpFile       - executable path
-	//   lpParameters - command line arguments
-	//   lpDirectory  - working directory (0 = use exe's directory)
-	//   nShowCmd     - SW_SHOWNORMAL (1)
-	ret, _, err := shellExecuteW.Call(
-		0, // hwnd
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("runas"))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(exe))),
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(params))),
-		0, // directory
-		syscall.SW_SHOWNORMAL,
-	)
+	verbPtr, _ := syscall.UTF16PtrFromString("runas")
+	exePtr, _ := syscall.UTF16PtrFromString(exe)
+	paramsPtr, _ := syscall.UTF16PtrFromString(params)
 
-	// ShellExecuteW returns > 32 on success, <= 32 on failure
-	if ret <= 32 {
-		return fmt.Errorf("ShellExecuteW failed (code %d): %v", ret, err)
+	sei := shellExecuteInfo{
+		fMask:      seeMaskNoCloseProcess,
+		verb:       verbPtr,
+		file:       exePtr,
+		parameters: paramsPtr,
+		show:       swHide,
+	}
+	sei.cbSize = uint32(unsafe.Sizeof(sei))
+
+	shell32 := windows.NewLazySystemDLL("shell32.dll")
+	shellExecuteExW := shell32.NewProc("ShellExecuteExW")
+	ret, _, callErr := shellExecuteExW.Call(uintptr(unsafe.Pointer(&sei)))
+	if ret == 0 {
+		return fmt.Errorf("ShellExecuteExW failed: %v", callErr)
+	}
+	if sei.process == 0 {
+		// Elevation started but we have no handle to wait on; best-effort return.
+		return nil
 	}
 
+	h := windows.Handle(sei.process)
+	defer windows.CloseHandle(h)
+
+	// Wait for the elevated child to finish, then relay its captured output into
+	// this (original) console so nothing flashes past in a separate window.
+	_, _ = windows.WaitForSingleObject(h, windows.INFINITE)
+	relayed := false
+	if out, rerr := os.ReadFile(logPath); rerr == nil && len(out) > 0 {
+		os.Stdout.Write(out)
+		relayed = true
+	}
+
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err == nil && code != 0 {
+		// The child already printed its own message; a wrapped "exited with
+		// code N" line on top of it is redundant noise, so signal quietly.
+		if relayed {
+			return ErrChildReported
+		}
+		return fmt.Errorf("elevated operation exited with code %d", code)
+	}
 	return nil
 }

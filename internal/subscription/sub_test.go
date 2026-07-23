@@ -1,104 +1,213 @@
 package subscription
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
 )
 
-func TestGenerateConfigNoSubscriptions(t *testing.T) {
+// sampleClashConfig is a full clash document with the author's own groups/rules.
+const sampleClashConfig = `
+mixed-port: 7890
+allow-lan: true
+external-controller: 127.0.0.1:9090
+secret: sub-secret
+proxies:
+  - {name: "HK-1", type: ss, server: a.example.com, port: 443, cipher: aes-128-gcm, password: x}
+  - {name: "US-1", type: ss, server: b.example.com, port: 443, cipher: aes-128-gcm, password: y}
+proxy-groups:
+  - {name: "Streaming", type: select, proxies: ["HK-1", "US-1"]}
+  - {name: "PROXY", type: select, proxies: ["HK-1", "US-1", "DIRECT"]}
+rules:
+  - "DOMAIN-SUFFIX,youtube.com,Streaming"
+  - "GEOIP,CN,DIRECT"
+  - "MATCH,PROXY"
+`
+
+// nodeOnlyConfig has proxies but no groups or rules.
+const nodeOnlyConfig = `
+proxies:
+  - {name: "N-1", type: ss, server: a.example.com, port: 443, cipher: aes-128-gcm, password: x}
+`
+
+func newTestPaths(t *testing.T) *paths.Paths {
 	dir := t.TempDir()
-	p := &paths.Paths{
+	return &paths.Paths{
 		Data:   dir,
 		Bin:    filepath.Join(dir, "bin"),
 		UI:     filepath.Join(dir, "ui"),
 		Config: filepath.Join(dir, "zashhomo.yaml"),
 	}
+}
 
+// serveConfig starts an httptest server returning body for every request.
+func serveConfig(t *testing.T, body string) string {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestGenerateConfigNoSubscriptions(t *testing.T) {
+	p := newTestPaths(t)
+	cfg := &config.Config{MixedPort: 9190, ControllerAddr: "127.0.0.1:9090", Secret: "test-secret"}
+
+	if err := GenerateConfig(p, cfg); err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(p.MihomoConfig())
+	if err != nil {
+		t.Fatalf("mihomo config not created: %v", err)
+	}
+	if !strings.Contains(string(data), "MATCH,PROXY") {
+		t.Errorf("expected direct-only fallback rule, got:\n%s", data)
+	}
+}
+
+func TestGenerateConfigPassthrough(t *testing.T) {
+	p := newTestPaths(t)
+	url := serveConfig(t, sampleClashConfig)
 	cfg := &config.Config{
 		MixedPort:      9190,
-		ControllerAddr: "127.0.0.1:9090",
-		Secret:         "test-secret",
+		ControllerAddr: "127.0.0.1:9099",
+		Secret:         "zashhomo-secret",
+		Subscriptions:  []config.Subscription{{Name: "primary", URL: url}},
 	}
 
 	if err := GenerateConfig(p, cfg); err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
+	got := readConfig(t, p)
 
-	// Verify file exists
-	if _, err := os.Stat(p.MihomoConfig()); err != nil {
-		t.Errorf("mihomo config not created: %v", err)
+	// The subscription's groups and rules survive.
+	for _, want := range []string{"Streaming", "DOMAIN-SUFFIX,youtube.com,Streaming", "GEOIP,CN,DIRECT", "HK-1", "US-1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("passthrough missing %q in:\n%s", want, got)
+		}
 	}
-
-	// Verify content
-	data, err := os.ReadFile(p.MihomoConfig())
-	if err != nil {
-		t.Fatal(err)
+	// Control fields are overridden to zashhomo's values.
+	if !strings.Contains(got, "127.0.0.1:9099") {
+		t.Errorf("external-controller not overridden:\n%s", got)
 	}
-	// Should have basic config
-	content := string(data)
-	if content == "" {
-		t.Error("config is empty")
+	if !strings.Contains(got, "zashhomo-secret") || strings.Contains(got, "sub-secret") {
+		t.Errorf("secret not overridden:\n%s", got)
+	}
+	if !strings.Contains(got, "mixed-port: 9190") {
+		t.Errorf("mixed-port not overridden:\n%s", got)
+	}
+	if strings.Contains(got, "allow-lan: true") {
+		t.Errorf("allow-lan should be forced false:\n%s", got)
 	}
 }
 
-func TestGenerateConfigWithSubscriptions(t *testing.T) {
-	dir := t.TempDir()
-	p := &paths.Paths{
-		Data:   dir,
-		Bin:    filepath.Join(dir, "bin"),
-		UI:     filepath.Join(dir, "ui"),
-		Config: filepath.Join(dir, "zashhomo.yaml"),
-	}
-
+func TestGenerateConfigNodeOnly(t *testing.T) {
+	p := newTestPaths(t)
+	url := serveConfig(t, nodeOnlyConfig)
 	cfg := &config.Config{
 		MixedPort:      9190,
 		ControllerAddr: "127.0.0.1:9090",
-		Secret:         "test-secret",
+		Secret:         "s",
+		Subscriptions:  []config.Subscription{{Name: "primary", URL: url}},
+	}
+
+	if err := GenerateConfig(p, cfg); err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+	got := readConfig(t, p)
+	// A node-only subscription gets a synthesized PROXY group + MATCH rule.
+	if !strings.Contains(got, "MATCH,PROXY") {
+		t.Errorf("node-only config missing synthesized rule:\n%s", got)
+	}
+	if !strings.Contains(got, "N-1") {
+		t.Errorf("node-only config missing proxy N-1:\n%s", got)
+	}
+}
+
+func TestGenerateConfigMergesExtraSubscriptions(t *testing.T) {
+	p := newTestPaths(t)
+	primary := serveConfig(t, sampleClashConfig)
+	extra := serveConfig(t, nodeOnlyConfig)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
 		Subscriptions: []config.Subscription{
-			{Name: "sub1", URL: "https://example.com/sub1"},
-			{Name: "sub2", URL: "https://example.com/sub2"},
+			{Name: "primary", URL: primary},
+			{Name: "extra", URL: extra},
 		},
 	}
 
 	if err := GenerateConfig(p, cfg); err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
-
-	// Verify file exists
-	data, err := os.ReadFile(p.MihomoConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	content := string(data)
-	// Should contain proxy-providers
-	if len(cfg.Subscriptions) > 0 && content == "" {
-		t.Error("config should not be empty with subscriptions")
+	got := readConfig(t, p)
+	// The extra subscription's node joins the pool and the select groups.
+	if !strings.Contains(got, "N-1") {
+		t.Errorf("extra subscription node not merged:\n%s", got)
 	}
 }
 
-func TestGenerateConfigCreatesDirs(t *testing.T) {
-	dir := t.TempDir()
-	p := &paths.Paths{
-		Data:   dir,
-		Bin:    filepath.Join(dir, "bin"),
-		UI:     filepath.Join(dir, "ui"),
-		Config: filepath.Join(dir, "zashhomo.yaml"),
+func TestGenerateConfigFetchFailKeepsExisting(t *testing.T) {
+	p := newTestPaths(t)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-write a "good" config that must not be clobbered.
+	good := "mixed-port: 1234\nrules:\n  - MATCH,PROXY\n# sentinel-good-config\n"
+	if err := os.WriteFile(p.MihomoConfig(), []byte(good), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		// Unroutable URL forces a fetch error.
+		Subscriptions: []config.Subscription{{Name: "bad", URL: "http://127.0.0.1:0/nope"}},
+	}
+
+	if err := GenerateConfig(p, cfg); err == nil {
+		t.Error("expected an error when fetch fails")
+	}
+	got := readConfig(t, p)
+	if !strings.Contains(got, "sentinel-good-config") {
+		t.Errorf("existing config was clobbered on fetch failure:\n%s", got)
+	}
+}
+
+func TestGenerateConfigFetchFailWritesFallback(t *testing.T) {
+	p := newTestPaths(t)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		Subscriptions:  []config.Subscription{{Name: "bad", URL: "http://127.0.0.1:0/nope"}},
+	}
+
+	// Error is expected, but a direct-only fallback must be written so the
+	// kernel can still start.
+	_ = GenerateConfig(p, cfg)
+	got := readConfig(t, p)
+	if !strings.Contains(got, "MATCH,PROXY") {
+		t.Errorf("expected direct-only fallback, got:\n%s", got)
+	}
+}
+
+func TestGenerateConfigCreatesProvidersDir(t *testing.T) {
+	p := newTestPaths(t)
 	cfg := config.Default()
 
 	if err := GenerateConfig(p, cfg); err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
-
-	// Verify providers dir created
-	providersDir := p.ProvidersDir()
-	if _, err := os.Stat(providersDir); err != nil {
+	if _, err := os.Stat(p.ProvidersDir()); err != nil {
 		t.Errorf("providers dir not created: %v", err)
 	}
 }
@@ -107,71 +216,19 @@ func TestWriteYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.yaml")
 
-	data := map[string]string{"key": "value"}
-	if err := writeYAML(path, data); err != nil {
+	if err := writeYAML(path, map[string]string{"key": "value"}); err != nil {
 		t.Fatalf("writeYAML failed: %v", err)
 	}
-
-	// Verify file exists
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("file not created: %v", err)
 	}
+}
 
-	// Verify permissions (0600)
-	info, err := os.Stat(path)
+func readConfig(t *testing.T, p *paths.Paths) string {
+	t.Helper()
+	data, err := os.ReadFile(p.MihomoConfig())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read config: %v", err)
 	}
-	// Note: permission check varies by platform
-	_ = info
-}
-
-func TestGenerateConfigCustomPort(t *testing.T) {
-	dir := t.TempDir()
-	p := &paths.Paths{
-		Data:   dir,
-		Bin:    filepath.Join(dir, "bin"),
-		UI:     filepath.Join(dir, "ui"),
-		Config: filepath.Join(dir, "zashhomo.yaml"),
-	}
-
-	cfg := &config.Config{
-		MixedPort:      8080,
-		ControllerAddr: "127.0.0.1:9999",
-		Secret:         "custom-secret",
-	}
-
-	if err := GenerateConfig(p, cfg); err != nil {
-		t.Fatalf("GenerateConfig failed: %v", err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(p.MihomoConfig()); err != nil {
-		t.Errorf("mihomo config not created: %v", err)
-	}
-}
-
-func TestGenerateConfigCreatesProvidersDir(t *testing.T) {
-	dir := t.TempDir()
-	p := &paths.Paths{
-		Data:   dir,
-		Bin:    filepath.Join(dir, "bin"),
-		UI:     filepath.Join(dir, "ui"),
-		Config: filepath.Join(dir, "zashhomo.yaml"),
-	}
-
-	cfg := config.Default()
-	cfg.Subscriptions = []config.Subscription{
-		{Name: "test", URL: "https://example.com/test"},
-	}
-
-	if err := GenerateConfig(p, cfg); err != nil {
-		t.Fatalf("GenerateConfig failed: %v", err)
-	}
-
-	// Verify providers dir created
-	providersDir := p.ProvidersDir()
-	if _, err := os.Stat(providersDir); err != nil {
-		t.Errorf("providers dir not created: %v", err)
-	}
+	return string(data)
 }

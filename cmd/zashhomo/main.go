@@ -744,6 +744,33 @@ func cmdSub(args []string) error {
 		printSubscriptions(p, cfg)
 		return nil
 
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("sub show: missing <index>")
+		}
+		var index int
+		if _, err := fmt.Sscanf(args[1], "%d", &index); err != nil {
+			return fmt.Errorf("sub show: invalid index %q", args[1])
+		}
+		if index < 0 || index >= len(cfg.Subscriptions) {
+			return fmt.Errorf("sub show: index %d out of range (0-%d)", index, len(cfg.Subscriptions)-1)
+		}
+		sub := cfg.Subscriptions[index]
+		name := sub.Name
+		if name == "" {
+			name = fmt.Sprintf("sub-%d", index)
+		}
+
+		// Display subscription details with themed output
+		line := func(label, value string) string {
+			return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
+		}
+
+		fmt.Print(line("name:  ", name))
+		fmt.Print(line("url:   ", sub.URL))
+		fmt.Print(line("index: ", fmt.Sprintf("%d", index)))
+		return nil
+
 	case "edit":
 		return openInEditor(p.Config)
 

@@ -69,6 +69,34 @@ func menuHeader(st svc.State) string {
 	return b.String()
 }
 
+// subscriptionMenu builds a dynamic submenu listing all subscriptions.
+func subscriptionMenu() []menuItem {
+	cfg, _ := config.Load(paths.New().Config)
+	if cfg == nil || len(cfg.Subscriptions) == 0 {
+		return []menuItem{
+			{label: "No subscriptions configured", disabled: "use 'Add subscription' to add one"},
+		}
+	}
+
+	items := make([]menuItem, 0, len(cfg.Subscriptions))
+	for i, sub := range cfg.Subscriptions {
+		name := sub.Name
+		if name == "" {
+			name = fmt.Sprintf("sub-%d", i)
+		}
+		// Display name and truncated URL
+		url := sub.URL
+		if len(url) > 50 {
+			url = url[:47] + "..."
+		}
+		items = append(items, menuItem{
+			label:  name,
+			action: fmt.Sprintf("sub show %d", i),
+		})
+	}
+	return items
+}
+
 // rootMenu builds the top-level management menu, ordered and annotated for the
 // current service state: the most useful next action leads, and actions that
 // don't apply yet are greyed with a reason. Items whose commands need free-form
@@ -86,7 +114,7 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Everything (--all)", action: "update --all"},
 	}}
 	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
-		{label: "List subscriptions", action: "sub list"},
+		{label: "List subscriptions ▸", sub: subscriptionMenu()},
 		{label: "Add subscription…", action: "sub-add"},
 		{label: "Update & reload", action: "sub update"},
 		{label: "Set refresh interval…", action: "sub-interval"},

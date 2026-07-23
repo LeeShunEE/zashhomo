@@ -36,15 +36,69 @@ $dest = Join-Path $binDir 'zashhomo.exe'
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
-Info "Downloading $asset from $repo..."
-Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+  [Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 
-# Add install dir to the user PATH if missing.
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath -notlike "*$binDir*") {
-  Info "Adding $binDir to your PATH"
-  [Environment]::SetEnvironmentVariable('Path', "$userPath;$binDir", 'User')
-  $env:Path = "$env:Path;$binDir"
+# Inspect any existing install so we can upgrade in place. A running service
+# holds an open handle on zashhomo.exe, so it must be stopped before the file
+# can be replaced.
+$svc = Get-Service -Name 'zashhomo' -ErrorAction SilentlyContinue
+$svcRunning = $svc -and $svc.Status -eq 'Running'
+
+if ($svcRunning) {
+  Write-Host "* 检测到 zashhomo 服务正在运行。" -ForegroundColor Yellow
+  $ans = Read-Host "  停止服务、更新 exe 并重启？[Y/n]"
+  if ($ans -and $ans -notmatch '^[Yy]') {
+    Info "已取消，未做任何更改。"
+    return
+  }
+}
+
+# Download to a temp file first so a running zashhomo.exe can't block the
+# download, then swap it into place.
+$tmp = Join-Path $binDir ("zashhomo.exe.new-" + [Guid]::NewGuid().ToString('N'))
+Info "Downloading $asset from $repo..."
+try {
+  Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+
+  # Add install dir to the user PATH if missing.
+  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if ($userPath -notlike "*$binDir*") {
+    Info "Adding $binDir to your PATH"
+    [Environment]::SetEnvironmentVariable('Path', "$userPath;$binDir", 'User')
+    $env:Path = "$env:Path;$binDir"
+  }
+
+  if ($svcRunning) {
+    # Upgrade a running service: stop -> replace exe -> restart. Service
+    # control needs elevation, so bundle all three into a single elevated step.
+    Info "Stopping service, updating exe, and restarting..."
+    $swap = "Stop-Service -Name zashhomo -Force; " +
+            "Move-Item -LiteralPath '$tmp' -Destination '$dest' -Force; " +
+            "Start-Service -Name zashhomo"
+    if ($isAdmin) {
+      Invoke-Expression $swap
+    } else {
+      Info "Elevating to restart the Windows service..."
+      Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile', '-Command', $swap
+    }
+    Write-Host "`n[OK] Updated to $version. Manage with: zashhomo status | zashhomo sub add <url>" -ForegroundColor Green
+    return
+  }
+
+  # Not running (fresh install, or service stopped): just put the exe in place.
+  Move-Item -LiteralPath $tmp -Destination $dest -Force
+} catch {
+  if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+  throw
+}
+
+if ($svc) {
+  # Service already registered and pointing at the same path; the new exe is in
+  # place, nothing else to do.
+  Write-Host "`n[OK] Updated to $version. Manage with: zashhomo status | zashhomo sub add <url>" -ForegroundColor Green
+  return
 }
 
 if ($env:ZASHHOMO_NO_INSTALL -eq '1') {
@@ -54,10 +108,6 @@ if ($env:ZASHHOMO_NO_INSTALL -eq '1') {
 
 Info "Running zashhomo install..."
 # Installing a Windows service requires elevation.
-$isAdmin = ([Security.Principal.WindowsPrincipal] `
-  [Security.Principal.WindowsIdentity]::GetCurrent()
-  ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
-
 if ($isAdmin) {
   & $dest install
 } else {

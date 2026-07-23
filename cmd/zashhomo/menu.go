@@ -85,7 +85,7 @@ func subscriptionMenu() []menuItem {
 			name = fmt.Sprintf("sub-%d", i)
 		}
 		// Display name
-			_ = sub.URL // URL available but not shown in menu
+		_ = sub.URL // URL available but not shown in menu
 		items = append(items, menuItem{
 			label:  name,
 			action: fmt.Sprintf("sub show %d", i),
@@ -113,6 +113,7 @@ func rootMenu(st svc.State) []menuItem {
 	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
 		{label: "List subscriptions ▸", sub: subscriptionMenu()},
 		{label: "Add subscription…", action: "sub-add"},
+		{label: "Remove subscription…", action: "sub-remove"},
 		{label: "Update & reload", action: "sub update"},
 		{label: "Set refresh interval…", action: "sub-interval"},
 		{label: "Open config file", action: "sub edit"},

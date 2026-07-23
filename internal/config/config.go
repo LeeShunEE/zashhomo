@@ -149,6 +149,16 @@ func (c *Config) AddSubscription(name, url string) {
 	c.Subscriptions = append(c.Subscriptions, Subscription{Name: name, URL: url})
 }
 
+// RemoveSubscription deletes the subscription at index, returning an error when
+// the index is out of range.
+func (c *Config) RemoveSubscription(index int) error {
+	if index < 0 || index >= len(c.Subscriptions) {
+		return fmt.Errorf("subscription index %d out of range (0-%d)", index, len(c.Subscriptions)-1)
+	}
+	c.Subscriptions = append(c.Subscriptions[:index], c.Subscriptions[index+1:]...)
+	return nil
+}
+
 // itoa is a tiny int->string helper to avoid importing strconv here.
 func itoa(n int) string {
 	if n == 0 {

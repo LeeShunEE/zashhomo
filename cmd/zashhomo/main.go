@@ -192,6 +192,7 @@ Usage:
   zashhomo status             Show service status
   zashhomo update [flags]     Update components (--core --ui --self --all)
   zashhomo sub add <url>      Add a subscription
+  zashhomo sub remove <index> Remove the subscription at <index> (see 'sub list')
   zashhomo sub list           List subscriptions (metadata + edit hints)
   zashhomo sub edit           Open the config file in your editor
   zashhomo sub interval [dur] Show or set the global refresh interval (e.g. 6h)
@@ -453,6 +454,10 @@ func cmdMenu(_ []string) error {
 			} else if err := dispatch("sub", []string{"add", url}); err != nil {
 				printCmdError(err)
 			}
+		case "sub-remove":
+			if err := promptRemoveSubscription(); err != nil {
+				printCmdError(err)
+			}
 		case "sub-interval":
 			val := promptLine("Refresh interval (e.g. 6h, 30m; blank to cancel): ")
 			if val == "" {
@@ -703,7 +708,7 @@ func selfAssetName(_ string) string {
 
 func cmdSub(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("sub: expected 'add <url>' or 'update'")
+		return fmt.Errorf("sub: expected 'add <url>', 'remove <index>', 'list', or 'update'")
 	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)
@@ -778,6 +783,40 @@ func cmdSub(args []string) error {
 		fmt.Print(line("index: ", fmt.Sprintf("%d", index)))
 		return nil
 
+	case "remove", "rm", "del", "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("sub remove: missing <index>")
+		}
+		var index int
+		if _, err := fmt.Sscanf(args[1], "%d", &index); err != nil {
+			return fmt.Errorf("sub remove: invalid index %q", args[1])
+		}
+		if index < 0 || index >= len(cfg.Subscriptions) {
+			return fmt.Errorf("sub remove: index %d out of range (0-%d)", index, len(cfg.Subscriptions)-1)
+		}
+		removed := cfg.Subscriptions[index]
+		name := removed.Name
+		if name == "" {
+			name = fmt.Sprintf("sub-%d", index)
+		}
+		if err := cfg.RemoveSubscription(index); err != nil {
+			return err
+		}
+		if err := subscription.GenerateConfig(p, cfg); err != nil {
+			return err
+		}
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("removed subscription %q (%d remaining)\n", name, len(cfg.Subscriptions))
+		// Try a live reload; ignore errors when the service isn't running.
+		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
+			fmt.Println("kernel reloaded")
+		} else {
+			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
+		}
+		return nil
+
 	case "edit":
 		return openInEditor(p.Config)
 
@@ -811,6 +850,39 @@ func cmdSub(args []string) error {
 	}
 }
 
+// promptRemoveSubscription lists the configured subscriptions and asks which one
+// to delete, then dispatches `sub remove <index>`. It is the interactive-menu
+// counterpart to the `sub remove` command.
+func promptRemoveSubscription() error {
+	p := paths.New()
+	cfg, err := loadOrInit(p)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Subscriptions) == 0 {
+		fmt.Println("no subscriptions to remove")
+		return nil
+	}
+	for i, s := range cfg.Subscriptions {
+		name := s.Name
+		if name == "" {
+			name = fmt.Sprintf("sub-%d", i)
+		}
+		fmt.Printf("  [%d] %s\n", i, theme.OutputValue.Render(name))
+		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
+	}
+	in := promptLine("\nIndex to remove (blank to cancel): ")
+	if in == "" {
+		fmt.Println("cancelled")
+		return nil
+	}
+	var index int
+	if _, err := fmt.Sscanf(in, "%d", &index); err != nil {
+		return fmt.Errorf("invalid index %q", in)
+	}
+	return dispatch("sub", []string{"remove", fmt.Sprintf("%d", index)})
+}
+
 // printSubscriptions lists the configured subscriptions with their metadata and
 // the config path, plus the commands that edit them.
 func printSubscriptions(p *paths.Paths, cfg *config.Config) {
@@ -839,8 +911,9 @@ func printSubscriptions(p *paths.Paths, cfg *config.Config) {
 		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
 	}
 
-	fmt.Println("\nedit:  zashhomo sub edit             (open config file)")
-	fmt.Println("       zashhomo sub interval <dur>  (set refresh interval, e.g. 6h)")
+	fmt.Println("\nedit:    zashhomo sub edit             (open config file)")
+	fmt.Println("         zashhomo sub interval <dur>  (set refresh interval, e.g. 6h)")
+	fmt.Println("remove:  zashhomo sub remove <index>  (delete a subscription)")
 }
 
 // openInEditor opens path in the user's editor: $VISUAL or $EDITOR when set,

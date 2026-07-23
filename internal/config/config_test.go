@@ -201,6 +201,35 @@ func TestAddSubscription(t *testing.T) {
 	}
 }
 
+func TestRemoveSubscription(t *testing.T) {
+	cfg := Default()
+	cfg.AddSubscription("a", "https://example.com/a")
+	cfg.AddSubscription("b", "https://example.com/b")
+	cfg.AddSubscription("c", "https://example.com/c")
+
+	// Out-of-range indexes are rejected without mutating the slice.
+	if err := cfg.RemoveSubscription(-1); err == nil {
+		t.Errorf("negative index should error")
+	}
+	if err := cfg.RemoveSubscription(3); err == nil {
+		t.Errorf("too-large index should error")
+	}
+	if len(cfg.Subscriptions) != 3 {
+		t.Fatalf("expected 3 subscriptions after failed removes, got %d", len(cfg.Subscriptions))
+	}
+
+	// Removing the middle element shifts the rest down.
+	if err := cfg.RemoveSubscription(1); err != nil {
+		t.Fatalf("RemoveSubscription: %v", err)
+	}
+	if len(cfg.Subscriptions) != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", len(cfg.Subscriptions))
+	}
+	if cfg.Subscriptions[0].Name != "a" || cfg.Subscriptions[1].Name != "c" {
+		t.Errorf("unexpected order after remove: %q, %q", cfg.Subscriptions[0].Name, cfg.Subscriptions[1].Name)
+	}
+}
+
 func TestItoa(t *testing.T) {
 	tests := []struct {
 		in   int

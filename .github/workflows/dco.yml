@@ -2,7 +2,11 @@ name: DCO
 
 on:
   pull_request:
+  # Only run on branch pushes. Tag pushes have a zero SHA for event.before, which
+  # makes the rev-list range invalid, and tags carry no new commits to check.
   push:
+    branches:
+      - '**'
 
 permissions:
   contents: read

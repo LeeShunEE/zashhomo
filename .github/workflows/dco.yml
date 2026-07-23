@@ -18,10 +18,12 @@ jobs:
       - name: Check DCO
         run: |
           # Check that all commits have Signed-off-by
+          # --no-merges skips merge commits: on a pull_request the workflow runs
+          # against a GitHub-generated merge commit that has no Signed-off-by.
           if [ "${{ github.event_name }}" = "push" ]; then
-            commits=$(git rev-list ${{ github.event.before }}..${{ github.sha }})
+            commits=$(git rev-list --no-merges ${{ github.event.before }}..${{ github.sha }})
           else
-            commits=$(git rev-list origin/${{ github.base_ref }}..HEAD)
+            commits=$(git rev-list --no-merges origin/${{ github.base_ref }}..HEAD)
           fi
 
           for commit in $commits; do

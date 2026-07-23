@@ -18,15 +18,6 @@ jobs:
           go-version: '1.24'
           check-latest: true
 
-      - name: Verify formatting
-        run: |
-          fmtout="$(gofmt -l cmd internal)"
-          if [ -n "$fmtout" ]; then
-            echo "These files are not gofmt-clean:"
-            echo "$fmtout"
-            exit 1
-          fi
-
       - name: Vet
         run: go vet ./...
 

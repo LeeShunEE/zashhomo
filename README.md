@@ -134,6 +134,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 ## 发布
 
-推送 `v*` tag 触发 `.github/workflows/release.yml`：交叉编译 linux/darwin(amd64/arm64)
-与 windows(amd64/arm64)，产物 `zashhomo-<version>-<os>-<arch>[.exe]` + `SHA256SUMS.txt` 上传至 Releases。
+推送 `v*` tag 触发 `.github/workflows/release.yml`：当前仅编译 windows(amd64/arm64)，
+产物 `zashhomo-<version>-windows-<arch>.exe` + `SHA256SUMS.txt` 上传至 Releases。
+其他平台（Linux/macOS）暂时禁用，后续按需启用。
 仓库地址：[github.com/LeeShunEE/zashhomo](https://github.com/LeeShunEE/zashhomo)。

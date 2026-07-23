@@ -17,10 +17,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64, ext: '' }
-          - { goos: linux,   goarch: arm64, ext: '' }
-          - { goos: darwin,  goarch: amd64, ext: '' }
-          - { goos: darwin,  goarch: arm64, ext: '' }
+          # Linux builds - temporarily disabled
+          # - { goos: linux,   goarch: amd64, ext: '' }
+          # - { goos: linux,   goarch: arm64, ext: '' }
+          # macOS builds - temporarily disabled
+          # - { goos: darwin,  goarch: amd64, ext: '' }
+          # - { goos: darwin,  goarch: arm64, ext: '' }
+          # Windows builds - currently supported
           - { goos: windows, goarch: amd64, ext: '.exe' }
           - { goos: windows, goarch: arm64, ext: '.exe' }
     steps:

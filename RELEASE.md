@@ -49,17 +49,15 @@ git push origin v1.0.0
 
 ## 发布产物
 
-每个版本会发布以下文件：
+每个版本会发布以下文件（当前仅支持 Windows 平台）：
 
 ```
-zashhomo-v1.0.0-linux-amd64
-zashhomo-v1.0.0-linux-arm64
-zashhomo-v1.0.0-darwin-amd64
-zashhomo-v1.0.0-darwin-arm64
 zashhomo-v1.0.0-windows-amd64.exe
 zashhomo-v1.0.0-windows-arm64.exe
 SHA256SUMS.txt
 ```
+
+> **注意**：Linux 和 macOS 平台暂时禁用。如需启用，请编辑 `.github/workflows/release.yml` 和 `.github/workflows/ci.yml`，取消相应平台的注释即可。
 
 ## 校验下载
 

@@ -45,10 +45,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64 }
-          - { goos: linux,   goarch: arm64 }
-          - { goos: darwin,  goarch: amd64 }
-          - { goos: darwin,  goarch: arm64 }
+          # Linux builds - temporarily disabled
+          # - { goos: linux,   goarch: amd64 }
+          # - { goos: linux,   goarch: arm64 }
+          # macOS builds - temporarily disabled
+          # - { goos: darwin,  goarch: amd64 }
+          # - { goos: darwin,  goarch: arm64 }
+          # Windows builds - currently supported
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
     steps:

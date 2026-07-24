@@ -10,6 +10,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/LeeShunEE/zashhomo/internal/ui"
 )
 
 // IsAdmin returns true if the current process has administrator privileges.
@@ -86,6 +88,22 @@ func RunElevated(args []string) error {
 	}
 	sei.cbSize = uint32(unsafe.Sizeof(sei))
 
+	// The child runs hidden and writes to the log file, so this console shows
+	// nothing at all between the UAC prompt and the relay below — on a slow
+	// install that reads as a freeze. Spin for the whole blocking stretch (the
+	// UAC prompt included, since ShellExecuteExW blocks on it too).
+	stage := ui.NewStage("Waiting for the elevated task")
+	stage.Start()
+	elevDone := func() {
+		if stage != nil {
+			// Clear rather than finalize: the relayed child output that follows
+			// already reports what happened, so a leftover line is just noise.
+			stage.Done("")
+			stage = nil
+		}
+	}
+	defer elevDone()
+
 	shell32 := windows.NewLazySystemDLL("shell32.dll")
 	shellExecuteExW := shell32.NewProc("ShellExecuteExW")
 	ret, _, callErr := shellExecuteExW.Call(uintptr(unsafe.Pointer(&sei)))
@@ -103,6 +121,7 @@ func RunElevated(args []string) error {
 	// Wait for the elevated child to finish, then relay its captured output into
 	// this (original) console so nothing flashes past in a separate window.
 	_, _ = windows.WaitForSingleObject(h, windows.INFINITE)
+	elevDone() // stop the animation before the relay writes to stdout
 	relayed := false
 	if out, rerr := os.ReadFile(logPath); rerr == nil && len(out) > 0 {
 		os.Stdout.Write(out)

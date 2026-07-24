@@ -128,6 +128,11 @@ func Status() (string, error) {
 type State struct {
 	Installed bool
 	Running   bool
+	// Pending is set while the service manager is still moving between states
+	// (Windows START_PENDING / STOP_PENDING). Running treats a starting service
+	// as running so the menu reads naturally, so waiters consult Pending to tell
+	// a settled state from one still in flight.
+	Pending bool
 }
 
 // GetState reports whether the service is installed and, if so, running. The
@@ -155,6 +160,46 @@ func genericState() State {
 		return State{Installed: true}
 	}
 	return State{Installed: true, Running: st == service.StatusRunning}
+}
+
+// StateWait bounds how long WaitRunning / WaitStopped give the service manager
+// to settle the service into the requested run state.
+const StateWait = 30 * time.Second
+
+// WaitRunning blocks until the service is installed and settled in the running
+// state, or timeout elapses. Control("start") and Control("restart") only ask
+// the service manager to start the service; on Windows the call returns while
+// the service is still START_PENDING, so callers that must confirm a successful
+// start wait here afterwards.
+func WaitRunning(timeout time.Duration) error { return waitRunState(true, timeout) }
+
+// WaitStopped blocks until the service is settled in the stopped state (or gone
+// entirely), or timeout elapses.
+func WaitStopped(timeout time.Duration) error { return waitRunState(false, timeout) }
+
+func waitRunState(want bool, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		st := GetState()
+		switch {
+		case want && !st.Installed:
+			return fmt.Errorf("service %s is not installed", serviceName)
+		case st.Pending:
+			// Still transitioning; keep waiting for it to settle.
+		case want && st.Running:
+			return nil
+		case !want && (!st.Installed || !st.Running):
+			return nil
+		}
+		if time.Now().After(deadline) {
+			verb := "stop"
+			if want {
+				verb = "start"
+			}
+			return fmt.Errorf("service %s did not %s within %s", serviceName, verb, timeout)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // Platform reports the detected service system (e.g. systemd, launchd).

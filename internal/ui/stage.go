@@ -230,6 +230,40 @@ func (s *Stage) Done(result string) {
 	s.lastLen = 0
 }
 
+// Run animates fn under a braille spinner labelled label, finalizing the line
+// with success when fn returns nil and "failed" when it does not. It is the
+// one-liner form of Start/Done for steps that only need to show they are alive,
+// and it degrades to plain line prints when stderr is not a terminal.
+//
+// Steps that finish instantly are not a special case: Done always prints the
+// final line, so a fast step simply renders its result without a visible frame.
+func Run(label, success string, fn func() error) error {
+	s := NewStage(label)
+	s.Start()
+	if err := fn(); err != nil {
+		s.Done("failed")
+		return err
+	}
+	s.Done(success)
+	return nil
+}
+
+// RunValue is Run for a step that produces a value, with the final line's text
+// derived from that value by result. On failure the value is returned as its
+// zero value alongside the error.
+func RunValue[T any](label string, fn func() (T, error), result func(T) string) (T, error) {
+	s := NewStage(label)
+	s.Start()
+	v, err := fn()
+	if err != nil {
+		s.Done("failed")
+		var zero T
+		return zero, err
+	}
+	s.Done(result(v))
+	return v, nil
+}
+
 // IsTerminal reports whether f is a terminal (a character device) without a
 // third-party TTY library. Pipes and regular files are not terminals.
 func IsTerminal(f *os.File) bool {

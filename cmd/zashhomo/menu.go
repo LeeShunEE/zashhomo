@@ -154,6 +154,9 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Disable system proxy", action: "system-proxy disable"},
 	}}
 	uninstall := menuItem{label: "Uninstall", action: "uninstall"}
+	// The guided setup applies in every state — it walks the same five steps and
+	// marks the ones already satisfied — so it is never greyed out.
+	guide := menuItem{label: "Guided setup", action: "onboard"}
 	version := menuItem{label: "Version", action: "version"}
 	help := menuItem{label: "Help", action: "help"}
 	exit := menuItem{label: "Exit", action: "exit"}
@@ -177,11 +180,11 @@ func rootMenu(st svc.State) []menuItem {
 	// Order so the obvious next step leads.
 	switch {
 	case !st.Installed:
-		return []menuItem{install, dashboard, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
+		return []menuItem{install, dashboard, subs, sysProxy, update, start, stop, restart, uninstall, guide, version, help, exit}
 	case !st.Running:
-		return []menuItem{start, restart, stop, dashboard, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{start, restart, stop, dashboard, subs, sysProxy, update, install, uninstall, guide, version, help, exit}
 	default:
-		return []menuItem{dashboard, stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{dashboard, stop, restart, start, subs, sysProxy, update, install, uninstall, guide, version, help, exit}
 	}
 }
 
@@ -313,16 +316,19 @@ func (m menuModel) View() string {
 	return b.String()
 }
 
-// confirmModel is the second gate in front of a destructive action: it names the
-// target, spells out that the change cannot be undone, and makes the user move
-// the cursor onto the destructive option. The cursor starts on "Cancel" so the
-// Enter that opened this screen can never delete anything by itself.
+// confirmModel is a two-option prompt. For a destructive action (danger set) it
+// is the second gate: it names the target, spells out that the change cannot be
+// undone, paints the confirming option red, and leaves the cursor on "Cancel" so
+// the Enter that opened the screen can never delete anything by itself. Benign
+// prompts clear danger and start the cursor on the confirming option.
 type confirmModel struct {
 	title    string   // what is about to happen, e.g. "Remove subscription"
 	details  []string // the target's identifying lines (name, URL, …)
-	warning  string   // why this is irreversible
-	yesLabel string   // label of the destructive option
-	cursor   int      // 0 = cancel, 1 = confirm
+	warning  string   // why this is irreversible; shown only when set
+	noLabel  string   // label of the declining option; defaults to "Cancel"
+	yesLabel string   // label of the confirming option
+	danger   bool     // the confirming option destroys something
+	cursor   int      // 0 = decline, 1 = confirm
 	answer   bool
 }
 
@@ -346,28 +352,40 @@ func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m confirmModel) View() string {
+	titleStyle := theme.Title
+	if m.danger {
+		titleStyle = theme.Danger
+	}
+
 	var card strings.Builder
-	card.WriteString(theme.Danger.Render(m.title))
+	card.WriteString(titleStyle.Render(m.title))
 	card.WriteByte('\n')
 	for _, d := range m.details {
 		card.WriteString("\n  " + theme.OutputValue.Render(d))
 	}
 	if m.warning != "" {
-		card.WriteString("\n\n" + theme.Danger.Render("⚠ "+m.warning))
+		warnStyle := theme.StatusWarn
+		if m.danger {
+			warnStyle = theme.Danger
+		}
+		card.WriteString("\n\n" + warnStyle.Render("⚠ "+m.warning))
 	}
 
 	var b strings.Builder
 	b.WriteString(theme.Card.Render(card.String()))
 	b.WriteString("\n\n")
 
-	options := []string{"Cancel", m.yesLabel}
-	for i, opt := range options {
+	noLabel := m.noLabel
+	if noLabel == "" {
+		noLabel = "Cancel"
+	}
+	for i, opt := range []string{noLabel, m.yesLabel} {
 		prefix := "  "
 		if i == m.cursor {
 			prefix = "❯ "
 		}
 		switch {
-		case i == m.cursor && i == 1:
+		case i == m.cursor && i == 1 && m.danger:
 			b.WriteString(theme.Danger.Render(prefix + opt))
 		case i == m.cursor:
 			b.WriteString(theme.Selected.Render(prefix + opt))

@@ -44,7 +44,9 @@ func platformState() State {
 	}
 	running := status.CurrentState == windows.SERVICE_RUNNING ||
 		status.CurrentState == windows.SERVICE_START_PENDING
-	return State{Installed: true, Running: running}
+	pending := status.CurrentState == windows.SERVICE_START_PENDING ||
+		status.CurrentState == windows.SERVICE_STOP_PENDING
+	return State{Installed: true, Running: running, Pending: pending}
 }
 
 // waitUninstalled polls the SCM until the service record is really gone.

@@ -14,6 +14,7 @@ type Paths struct {
 	UI     string // zashboard static site directory
 	Config string // zashhomo self config (zashhomo.yaml)
 	Log    string // daemon log file
+	State  string // per-user UI state dir (onboarding marker)
 }
 
 // mihomoBinName returns the platform binary file name for the mihomo kernel.
@@ -73,6 +74,24 @@ func configDir() string {
 	}
 }
 
+// stateDir picks the directory for per-user interface state — things the person
+// at the keyboard owns rather than the daemon, such as "the onboarding guide has
+// already been offered". It deliberately does not follow dataDir: on Windows the
+// data dir lives under ProgramData, which an unelevated session cannot write to,
+// and this state must be writable by whoever runs the menu.
+func stateDir() string {
+	if v := os.Getenv("ZASHHOMO_STATE_DIR"); v != "" {
+		return v
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		// No usable per-user location; fall back to the shared config dir, which
+		// at worst makes the marker unwritable and the prompt reappear.
+		return configDir()
+	}
+	return filepath.Join(dir, "zashhomo")
+}
+
 // New resolves all paths. It does not create directories; call EnsureDirs.
 func New() *Paths {
 	d := dataDir()
@@ -82,7 +101,14 @@ func New() *Paths {
 		UI:     filepath.Join(d, "ui"),
 		Config: filepath.Join(configDir(), "zashhomo.yaml"),
 		Log:    filepath.Join(d, "zashhomo.log"),
+		State:  stateDir(),
 	}
+}
+
+// OnboardMark returns the marker file recording that the guided setup has been
+// offered to this user. Its presence — not its contents — is the signal.
+func (p *Paths) OnboardMark() string {
+	return filepath.Join(p.State, "onboarded")
 }
 
 // EnsureDirs creates the directories zashhomo writes into.

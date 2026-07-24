@@ -20,6 +20,23 @@ const MihomoRepo = "MetaCubeX/mihomo"
 // installed release tag. If currentVersion matches the latest tag the download
 // is skipped and (tag, false, nil) is returned with updated=false.
 func Install(p *paths.Paths, currentVersion string) (tag string, updated bool, err error) {
+	// Animate the whole step: spinner while querying/extracting, progress bar
+	// while downloading. It starts before the release query because that is a
+	// network call which can stall for a long time on a slow or blocked
+	// connection — exactly when the user most needs to see progress.
+	st := ui.NewStage("Installing mihomo kernel")
+	st.Start()
+	defer func() {
+		switch {
+		case err != nil:
+			st.Done("failed")
+		case !updated:
+			st.Done(fmt.Sprintf("%s (up to date)", tag))
+		default:
+			st.Done(fmt.Sprintf("%s ✓", tag))
+		}
+	}()
+
 	rel, err := ghrelease.Latest(MihomoRepo)
 	if err != nil {
 		return "", false, fmt.Errorf("core: fetch release: %w", err)
@@ -35,18 +52,6 @@ func Install(p *paths.Paths, currentVersion string) (tag string, updated bool, e
 	if err := p.EnsureDirs(); err != nil {
 		return "", false, err
 	}
-
-	// Animate this step: spinner while fetching/extracting, progress bar while
-	// downloading. Finalized with the tag on success or "failed" on error.
-	st := ui.NewStage("Installing mihomo kernel")
-	st.Start()
-	defer func() {
-		if err != nil {
-			st.Done("failed")
-		} else {
-			st.Done(fmt.Sprintf("%s ✓", tag))
-		}
-	}()
 
 	dl := filepath.Join(p.Bin, asset.Name)
 	if err := st.Download(asset.URL, dl); err != nil {

@@ -26,6 +26,34 @@ func TestNew(t *testing.T) {
 	}
 }
 
+// The onboarding marker records per-user interface state, so it must not land in
+// the shared data dir — on Windows that is ProgramData, which an unelevated
+// session cannot write to.
+func TestStateDirIsIndependentOfDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("ZASHHOMO_DATA", dataDir)
+
+	p := New()
+	if p.State == "" {
+		t.Fatal("State should not be empty")
+	}
+	if p.State == p.Data {
+		t.Error("State must not share the data dir")
+	}
+	if want := filepath.Join(p.State, "onboarded"); p.OnboardMark() != want {
+		t.Errorf("OnboardMark = %q, want %q", p.OnboardMark(), want)
+	}
+}
+
+func TestStateDirEnvOverride(t *testing.T) {
+	custom := t.TempDir()
+	t.Setenv("ZASHHOMO_STATE_DIR", custom)
+
+	if got := New().State; got != custom {
+		t.Errorf("State = %q, want %q", got, custom)
+	}
+}
+
 func TestNewWithDataEnv(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv("ZASHHOMO_DATA", customDir)

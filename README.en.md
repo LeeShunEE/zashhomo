@@ -40,6 +40,7 @@ zashhomo -i | interactive     Interactive management menu (arrow keys; falls bac
 zashhomo service start|stop|restart|status   Control installed service (start/stop/restart require admin)
 zashhomo status               Show service status
 zashhomo dashboard            Open the zashboard panel in your default browser (token auto-login)
+zashhomo onboard              Guided setup: install, subscribe, restart, system proxy, panel
 zashhomo system-proxy enable|disable   Set/clear the OS system proxy (points at mixed-port)
 zashhomo update [--core|--ui|--self|--all]   Update components
 zashhomo sub add <url>        Add subscription

@@ -68,6 +68,40 @@ func TestRootMenuDashboardEntry(t *testing.T) {
 	}
 }
 
+// The guided setup sits at the bottom of the root menu, above Version/Help/Exit,
+// and stays available in every state.
+func TestRootMenuGuidedSetup(t *testing.T) {
+	states := []svc.State{
+		{},
+		{Installed: true},
+		{Installed: true, Running: true},
+	}
+	for _, st := range states {
+		root := rootMenu(st)
+		idx, verIdx := -1, -1
+		for i, it := range root {
+			switch it.label {
+			case "Guided setup":
+				idx = i
+			case "Version":
+				verIdx = i
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("state %+v: root menu has no 'Guided setup' entry", st)
+		}
+		if root[idx].action != "onboard" {
+			t.Errorf("state %+v: action = %q, want %q", st, root[idx].action, "onboard")
+		}
+		if root[idx].disabled != "" {
+			t.Errorf("state %+v: guided setup should never be greyed, got %q", st, root[idx].disabled)
+		}
+		if idx != verIdx-1 {
+			t.Errorf("state %+v: guided setup at %d, want directly above Version at %d", st, idx, verIdx)
+		}
+	}
+}
+
 func TestRootMenuUpdateLabel(t *testing.T) {
 	root := rootMenu(svc.State{Installed: true, Running: true})
 	if _, ok := findItem(root, "Software Update ▸"); !ok {
@@ -144,12 +178,37 @@ func TestConfirmModelDefaultsToCancel(t *testing.T) {
 	}
 }
 
+// A benign prompt (the onboarding welcome) opts out of the destructive default:
+// it starts on the confirming option so Enter accepts.
+func TestConfirmModelBenignDefaultsToYes(t *testing.T) {
+	m := confirmModel{
+		title:    "Welcome to zashhomo",
+		noLabel:  "Skip, go to the menu",
+		yesLabel: "Start the guide",
+		cursor:   1,
+	}
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !got.(confirmModel).answer {
+		t.Fatal("Enter on a benign prompt should accept")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Skip, go to the menu") {
+		t.Errorf("custom decline label missing from view:\n%s", view)
+	}
+	// Esc still declines.
+	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got.(confirmModel).answer {
+		t.Fatal("Esc should decline even when the cursor starts on yes")
+	}
+}
+
 func TestConfirmModelViewWarnsIrreversible(t *testing.T) {
 	m := confirmModel{
 		title:    "Remove this subscription?",
 		details:  []string{"home", "https://e.example/sub"},
 		warning:  "This cannot be undone.",
 		yesLabel: "Delete it",
+		danger:   true,
 	}
 	view := m.View()
 	for _, want := range []string{"Remove this subscription?", "home", "https://e.example/sub", "cannot be undone", "Delete it", "Cancel"} {

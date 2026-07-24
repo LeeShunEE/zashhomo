@@ -112,6 +112,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdStatus()
 	case "dashboard":
 		return cmdDashboard()
+	case "onboard":
+		return cmdOnboard()
 	case "update":
 		return cmdUpdate(args)
 	case "sub":
@@ -176,7 +178,24 @@ func cmdService(args []string) error {
 		if elevated, err := ensureElevated("Controlling the service", append([]string{"service"}, args...)); err != nil || elevated {
 			return err
 		}
-		return svc.Control(action)
+		// Control only asks the service manager to act; it returns while the
+		// service is still transitioning. Wait for the target state so the
+		// spinner covers the real work and the result is a genuine confirmation
+		// rather than "the request was accepted".
+		label := map[string]string{
+			"start":   "Starting service",
+			"stop":    "Stopping service",
+			"restart": "Restarting service",
+		}[action]
+		return ui.Run(label, "✓", func() error {
+			if err := svc.Control(action); err != nil {
+				return err
+			}
+			if action == "stop" {
+				return svc.WaitStopped(svc.StateWait)
+			}
+			return svc.WaitRunning(svc.StateWait)
+		})
 	case "status":
 		return cmdStatus()
 	default:
@@ -198,6 +217,7 @@ Usage:
                               Control the installed service (start/stop/restart need admin)
   zashhomo status             Show service status
   zashhomo dashboard          Open the zashboard panel in your default browser
+  zashhomo onboard            Guided setup: install, subscribe, start, proxy, panel
   zashhomo system-proxy enable|disable
                               Set or clear the OS system proxy (points at the mixed-port)
   zashhomo update [flags]     Update components (--core --ui --self --all)
@@ -331,58 +351,62 @@ func cmdInstall(args []string) error {
 	}
 	applyWebAddr(cfg, webAddr, webPort)
 
-	tag, updated, err := core.Install(p, cfg.CoreVersion)
+	// Both installers animate themselves and finalize their own line, including
+	// the "(up to date)" case, so nothing is printed here.
+	tag, _, err := core.Install(p, cfg.CoreVersion)
 	if err != nil {
 		return err
 	}
 	cfg.CoreVersion = tag
-	if !updated {
-		fmt.Printf("  kernel %s (up to date)\n", tag)
-	}
 
-	utag, uupdated, err := panel.Install(p, cfg.UIVersion)
+	utag, _, err := panel.Install(p, cfg.UIVersion)
 	if err != nil {
 		return err
 	}
 	cfg.UIVersion = utag
-	if !uupdated {
-		fmt.Printf("  panel %s (up to date)\n", utag)
-	}
 
-	fmt.Println("• Writing mihomo config…")
-	if err := subscription.GenerateConfig(p, cfg); err != nil {
-		return err
-	}
-	if err := cfg.Save(); err != nil {
+	// GenerateConfig fetches every subscription, so this step is network-bound.
+	if err := ui.Run("Writing mihomo config", "✓", func() error {
+		if err := subscription.GenerateConfig(p, cfg); err != nil {
+			return err
+		}
+		return cfg.Save()
+	}); err != nil {
 		return err
 	}
 
 	// Register `zashhomo` as a global CLI and pin the service to a stable path.
-	fmt.Println("• Registering global `zashhomo` command…")
 	exePath := ""
-	res, err := selfinstall.EnsureInstalled()
+	res, err := ui.RunValue("Registering global `zashhomo` command",
+		selfinstall.EnsureInstalled,
+		func(r selfinstall.Result) string {
+			if r.Copied {
+				return "installed to " + r.Path
+			}
+			return "already at " + r.Path
+		})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: could not install to PATH (%v); using current binary\n", err)
 	} else {
 		exePath = res.Path
-		if res.Copied {
-			fmt.Printf("  installed to %s\n", res.Path)
-		} else {
-			fmt.Printf("  already installed at %s\n", res.Path)
-		}
 	}
 
 	// With --force, remove any existing registration first so the (re)install
 	// doesn't fail with "service already exists".
 	if force && svc.GetState().Installed {
-		fmt.Println("• Removing existing service…")
-		if err := svc.Uninstall(); err != nil {
+		if err := ui.Run("Removing existing service", "✓", svc.Uninstall); err != nil {
 			return err
 		}
 	}
 
-	fmt.Printf("• Registering service (%s)…\n", svc.Platform())
-	if err := svc.Install(exePath); err != nil {
+	// svc.Install registers *and* starts the service, so keep spinning until the
+	// service manager reports it settled in the running state.
+	if err := ui.Run(fmt.Sprintf("Registering service (%s)", svc.Platform()), "✓", func() error {
+		if err := svc.Install(exePath); err != nil {
+			return err
+		}
+		return svc.WaitRunning(svc.StateWait)
+	}); err != nil {
 		return err
 	}
 
@@ -445,12 +469,35 @@ func cmdInteractive(args []string) error {
 // Each selection tears down the menu (alt screen), runs the command so its
 // normal stdout/spinners render on the main screen, then returns to the menu.
 func cmdMenu(_ []string) error {
+	// First launch for this user: offer the guided setup once, before the menu
+	// they have never seen appears. Declining is remembered too, so this asks at
+	// most once per user.
+	if start, err := offerOnboarding(paths.New()); err != nil {
+		return err
+	} else if start {
+		clearScreen()
+		if err := cmdOnboard(); err != nil {
+			printCmdError(err)
+		}
+		fmt.Println()
+		promptLine("Press Enter to open the menu… ")
+	}
+
 	for {
 		// Rebuild the menu (and its banner+status header) from the current state
 		// each loop so ordering, greyed items, and the status block reflect
 		// installs/starts made moments ago.
 		st := svc.GetState()
-		it, err := runMenu(st, menuHeader(st))
+		// The header probes the OS proxy and the running kernel, so building it
+		// can take a second or two. Spin on the main screen first, then hand the
+		// finished header to the menu — the alt screen would otherwise open on a
+		// blank frame with no sign that anything is happening.
+		var header string
+		_ = ui.Run("Reading status", "", func() error {
+			header = menuHeader(st)
+			return nil
+		})
+		it, err := runMenu(st, header)
 		if err != nil {
 			return err
 		}
@@ -584,9 +631,17 @@ func cmdStatus() error {
 	fmt.Print(line("service: ", stStyle.Render(st)+" ("+svc.Platform()+")"))
 	fmt.Print(line("version: ", version))
 	if cfg != nil {
-		fmt.Print(line("proxy:   ", systemProxyStatus(cfg)))
+		// proxy and tun are probed live (an OS query and a call to the kernel's
+		// REST API), so gather them under a spinner before printing the block —
+		// otherwise status just hangs for a few seconds with nothing on screen.
+		var proxy, tun string
+		_ = ui.Run("Reading live state", "", func() error {
+			proxy, tun = systemProxyStatus(cfg), tunStatus(cfg)
+			return nil
+		})
+		fmt.Print(line("proxy:   ", proxy))
 		fmt.Print(line("mixed:   ", mixedProxyURL(cfg)))
-		fmt.Print(line("tun:     ", tunStatus(cfg)))
+		fmt.Print(line("tun:     ", tun))
 		fmt.Print(line("panel:   ", panelURL(cfg)))
 		fmt.Print(line("kernel:  ", orDash(cfg.CoreVersion)))
 		fmt.Print(line("panelv:  ", orDash(cfg.UIVersion)))
@@ -703,6 +758,9 @@ func cmdSystemProxy(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("system-proxy: expected 'enable' or 'disable'")
 	}
+	if elevated, err := elevateSystemProxy(args); err != nil || elevated {
+		return err
+	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)
 	if err != nil {
@@ -710,28 +768,52 @@ func cmdSystemProxy(args []string) error {
 	}
 	switch args[0] {
 	case "enable", "on":
-		if err := sysproxy.Enable("127.0.0.1", cfg.MixedPort); err != nil {
+		// Applying the OS proxy broadcasts a settings change to every listener,
+		// which can stall for a moment; keep the line alive while it does.
+		if err := ui.Run("Enabling system proxy",
+			fmt.Sprintf("✓ 127.0.0.1:%d", cfg.MixedPort), func() error {
+				if err := sysproxy.Enable("127.0.0.1", cfg.MixedPort); err != nil {
+					return err
+				}
+				cfg.SystemProxy = true
+				return cfg.Save()
+			}); err != nil {
 			return err
 		}
-		cfg.SystemProxy = true
-		if err := cfg.Save(); err != nil {
-			return err
-		}
-		fmt.Printf("system proxy enabled (127.0.0.1:%d)\n", cfg.MixedPort)
 		return nil
 	case "disable", "off":
-		if err := sysproxy.Disable(); err != nil {
+		if err := ui.Run("Disabling system proxy", "✓", func() error {
+			if err := sysproxy.Disable(); err != nil {
+				return err
+			}
+			cfg.SystemProxy = false
+			return cfg.Save()
+		}); err != nil {
 			return err
 		}
-		cfg.SystemProxy = false
-		if err := cfg.Save(); err != nil {
-			return err
-		}
-		fmt.Println("system proxy disabled")
 		return nil
 	default:
 		return fmt.Errorf("system-proxy: unknown subcommand %q (want enable|disable)", args[0])
 	}
+}
+
+// elevateSystemProxy re-runs the system-proxy command elevated on Windows, where
+// the config lives under ProgramData and an unelevated session cannot record the
+// choice. Everywhere else the config is the user's own file, so there is nothing
+// to elevate for — and elevating would be actively wrong, since the proxy itself
+// is per-user state (GNOME's gsettings under sudo writes root's dconf).
+//
+// The Windows caveat: with the usual split-token administrator the elevated
+// process is still the same user, so the per-user proxy keys land where they
+// should. Only over-the-shoulder elevation — a standard user typing a *different*
+// admin's credentials — would set that other account's proxy, so say so first.
+func elevateSystemProxy(args []string) (elevated bool, err error) {
+	if runtime.GOOS != "windows" || elevate.IsAdmin() {
+		return false, nil
+	}
+	fmt.Println("Recording the system-proxy setting needs administrator rights.")
+	fmt.Println(theme.Hint.Render("If the UAC prompt asks for a different account, the proxy would be set for that account instead of yours."))
+	return ensureElevated("Setting the system proxy", append([]string{"system-proxy"}, args...))
 }
 
 func cmdUpdate(args []string) error {
@@ -760,25 +842,21 @@ func cmdUpdate(args []string) error {
 		return err
 	}
 
+	// Both installers animate themselves and finalize their own line, including
+	// the "(up to date)" case, so nothing is printed here.
 	if doCore || doAll {
-		tag, updated, err := core.Install(p, cfg.CoreVersion)
+		tag, _, err := core.Install(p, cfg.CoreVersion)
 		if err != nil {
 			return err
 		}
 		cfg.CoreVersion = tag
-		if !updated {
-			fmt.Printf("  kernel %s (up to date)\n", tag)
-		}
 	}
 	if doUI || doAll {
-		tag, updated, err := panel.Install(p, cfg.UIVersion)
+		tag, _, err := panel.Install(p, cfg.UIVersion)
 		if err != nil {
 			return err
 		}
 		cfg.UIVersion = tag
-		if !updated {
-			fmt.Printf("  panel %s (up to date)\n", tag)
-		}
 	}
 	if err := cfg.Save(); err != nil {
 		return err
@@ -794,18 +872,32 @@ func cmdUpdate(args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: self-update skipped: %v\n", err)
 		}
 	}
-	if (doCore || doUI || doAll) && !doSelf {
-		fmt.Println("restart the service to apply:  zashhomo service restart")
-	}
+	// Every branch above changes something the running service has already loaded,
+	// self-update included, so the hint applies whichever one ran.
+	fmt.Println("restart the service to apply:  zashhomo service restart")
 	return nil
 }
 
 // selfUpdate replaces the running zashhomo binary with the latest release.
 func selfUpdate() (err error) {
+	// The animation covers the release query too: it is a network call that can
+	// stall well before there is anything to download.
+	tag := ""
+	st := ui.NewStage("Updating zashhomo")
+	st.Start()
+	defer func() {
+		if err != nil {
+			st.Done("failed")
+		} else {
+			st.Done(fmt.Sprintf("%s ✓", tag))
+		}
+	}()
+
 	rel, err := ghrelease.Latest(selfRepo)
 	if err != nil {
 		return fmt.Errorf("self-update: %w", err)
 	}
+	tag = rel.TagName
 	name := selfAssetName(rel.TagName)
 	asset := rel.FindByExactName(name)
 	if asset == nil {
@@ -828,16 +920,6 @@ func selfUpdate() (err error) {
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 
-	st := ui.NewStage("Updating zashhomo")
-	st.Start()
-	defer func() {
-		if err != nil {
-			st.Done("failed")
-		} else {
-			st.Done(fmt.Sprintf("%s ✓", rel.TagName))
-		}
-	}()
-
 	newPath := exe + ".new"
 	if err := st.Download(asset.URL, newPath); err != nil {
 		return fmt.Errorf("self-update: download: %w", err)
@@ -858,7 +940,9 @@ func selfUpdate() (err error) {
 		return fmt.Errorf("self-update: install new binary: %w", err)
 	}
 	_ = os.Remove(oldPath)
-	fmt.Println("  restart the service to apply:  zashhomo service restart")
+	// The restart hint belongs to cmdUpdate, not here: st.Done runs on return, so
+	// anything printed at this point would land in the middle of the spinner line
+	// that is still being redrawn in place.
 	return nil
 }
 
@@ -892,29 +976,35 @@ func cmdSub(args []string) error {
 			name = args[2]
 		}
 		cfg.AddSubscription(name, url)
-		if err := subscription.GenerateConfig(p, cfg); err != nil {
-			return err
-		}
-		if err := cfg.Save(); err != nil {
+		// The new subscription is fetched here, so this waits on the network.
+		if err := ui.Run("Fetching subscription", "✓", func() error {
+			if err := subscription.GenerateConfig(p, cfg); err != nil {
+				return err
+			}
+			return cfg.Save()
+		}); err != nil {
 			return err
 		}
 		fmt.Printf("added subscription (%d total)\n", len(cfg.Subscriptions))
 		// Try a live reload; ignore errors when the service isn't running.
-		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
-			fmt.Println("kernel reloaded")
-		} else {
+		if err := ui.Run("Reloading kernel", "✓", func() error {
+			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
+		}); err != nil {
 			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
 		}
 		return nil
 
 	case "update":
-		if err := subscription.GenerateConfig(p, cfg); err != nil {
+		if err := ui.Run("Fetching subscriptions", "✓", func() error {
+			return subscription.GenerateConfig(p, cfg)
+		}); err != nil {
 			return err
 		}
-		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err != nil {
+		if err := ui.Run("Reloading kernel", "✓", func() error {
+			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
+		}); err != nil {
 			return fmt.Errorf("reload (is the service running?): %w", err)
 		}
-		fmt.Println("subscriptions reloaded")
 		return nil
 
 	case "list", "ls":
@@ -967,17 +1057,21 @@ func cmdSub(args []string) error {
 		if err := cfg.RemoveSubscription(index); err != nil {
 			return err
 		}
-		if err := subscription.GenerateConfig(p, cfg); err != nil {
-			return err
-		}
-		if err := cfg.Save(); err != nil {
+		// Regenerating refetches the remaining subscriptions, so this is
+		// network-bound even though the removal itself is local.
+		if err := ui.Run("Rewriting mihomo config", "✓", func() error {
+			if err := subscription.GenerateConfig(p, cfg); err != nil {
+				return err
+			}
+			return cfg.Save()
+		}); err != nil {
 			return err
 		}
 		fmt.Printf("removed subscription %q (%d remaining)\n", name, len(cfg.Subscriptions))
 		// Try a live reload; ignore errors when the service isn't running.
-		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
-			fmt.Println("kernel reloaded")
-		} else {
+		if err := ui.Run("Reloading kernel", "✓", func() error {
+			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
+		}); err != nil {
 			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
 		}
 		return nil
@@ -1000,13 +1094,17 @@ func cmdSub(args []string) error {
 		// Regenerate config so the new interval reaches the proxy-providers, then
 		// hot-reload if the kernel is up. The daemon's own refresh loop reads the
 		// interval at startup, so a restart is still needed to change its cadence.
-		if err := subscription.GenerateConfig(p, cfg); err != nil {
+		if err := ui.Run("Rewriting mihomo config", "✓", func() error {
+			return subscription.GenerateConfig(p, cfg)
+		}); err != nil {
 			return err
 		}
 		fmt.Printf("refresh interval set to %s\n", cfg.RefreshInterval())
-		if err := subscription.Reload(context.Background(), cfg, p.MihomoConfig()); err == nil {
-			fmt.Println("kernel reloaded")
-		}
+		// Best effort: a stopped kernel has nothing to reload, and the restart hint
+		// below already covers that case.
+		_ = ui.Run("Reloading kernel", "✓", func() error {
+			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
+		})
 		fmt.Println("restart the service to apply the daemon refresh cycle:  zashhomo service restart")
 		return nil
 
@@ -1044,6 +1142,7 @@ func removeSubscriptionAt(args []string) error {
 		details:  []string{subscriptionName(index, s), s.URL},
 		warning:  "This cannot be undone — the entry is deleted from the config, and its nodes disappear on the next reload.",
 		yesLabel: "Delete it",
+		danger:   true,
 	})
 	if err != nil {
 		return err
@@ -1158,23 +1257,26 @@ func cmdUninstall(args []string) error {
 			purge = true
 		}
 	}
-	if err := svc.Uninstall(); err != nil {
+	// Stopping the service and waiting out the service manager's deletion can
+	// both take seconds, so animate them rather than sitting silent.
+	if err := ui.Run("Removing service", "✓", svc.Uninstall); err != nil {
 		fmt.Fprintln(os.Stderr, "warning:", err)
 	}
-	fmt.Println("service removed")
-	if err := selfinstall.Uninstall(); err != nil {
+	if err := ui.Run("Removing global command", "✓", selfinstall.Uninstall); err != nil {
 		fmt.Fprintf(os.Stderr, "note: %v (remove it manually if desired)\n", err)
-	} else {
-		fmt.Println("global command removed")
 	}
 	if purge {
-		p := paths.New()
-		for _, dir := range []string{p.Data, filepath.Dir(p.Config)} {
-			if err := os.RemoveAll(dir); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: remove %s: %v\n", dir, err)
+		if err := ui.Run("Removing data and config", "✓", func() error {
+			p := paths.New()
+			for _, dir := range []string{p.Data, filepath.Dir(p.Config)} {
+				if err := os.RemoveAll(dir); err != nil {
+					return fmt.Errorf("remove %s: %w", dir, err)
+				}
 			}
+			return nil
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "warning:", err)
 		}
-		fmt.Println("data and config removed")
 	} else {
 		fmt.Println("data and config kept (use --purge to remove)")
 	}

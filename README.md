@@ -20,6 +20,16 @@
 - **系统服务**：通过 [kardianos/service](https://github.com/kardianos/service) 统一封装
   systemd / launchd / Windows 服务，开机自启。
 
+## 内存用量
+
+zashhomo 作为守护进程常驻后台，内存占用极低。以下对比 Sparkle GUI 方案与 zashhomo+mihomo 组合：
+
+| Sparkle（独立 GUI） | zashhomo + mihomo 组合 |
+|:---:|:---:|
+| ![Sparkle 内存用量](assets/sparkle-memory-usage.png) | **zashhomo 守护进程**<br>![zashhomo 内存用量](assets/zashhomo-memory-usage.png)<br><br>**mihomo 内核**<br>![mihomo 内存用量](assets/mihomo-memory-usage-zashhomo.png) |
+
+Sparkle 作为独立 GUI 应用约占用 **700 MB** 内存；而 zashhomo 自身仅约 **5 MB**，加上 mihomo 内核约 **73 MB**，整体更轻量，适合长期后台运行。
+
 ## 一行安装
 
 Linux / macOS：

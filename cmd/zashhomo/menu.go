@@ -70,7 +70,9 @@ func menuHeader(st svc.State) string {
 		b.WriteString(line("panelv", orDash(cfg.UIVersion)))
 		b.WriteString(line("subs", fmt.Sprintf("%d", len(cfg.Subscriptions))))
 	}
-	return b.String()
+	// Every line() ends in a newline; keeping the last one would render an empty
+	// row inside the card, pushing the bottom border away from the final field.
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // subscriptionName returns the display name of the subscription at index i,
@@ -256,18 +258,20 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m menuModel) View() string {
 	var b strings.Builder
 
-	// Header area with card border (bigBanner + status only)
+	// Header area with card border (bigBanner + status only). The card style's
+	// bottom margin already supplies the single blank line separating it from
+	// what follows, so only that margin line is terminated here — writing more
+	// would stack extra blank rows above the first menu item.
 	if m.header != "" {
 		b.WriteString(theme.Card.Render(m.header))
-		b.WriteString("\n")
+		b.WriteByte('\n')
 	}
 
 	// Breadcrumb below the card — the root "zashhomo" is omitted since the
-	// banner (hero badge) inside the card already shows it.
+	// banner (hero badge) inside the card already shows it. It sits directly on
+	// top of the items it labels.
 	if crumbs := m.titles[1:]; len(crumbs) > 0 {
 		b.WriteString(theme.Title.Render(strings.Join(crumbs, " ▸ ")))
-		b.WriteString("\n\n")
-	} else {
 		b.WriteByte('\n')
 	}
 

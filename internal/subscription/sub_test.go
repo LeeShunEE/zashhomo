@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
@@ -130,27 +131,142 @@ func TestGenerateConfigNodeOnly(t *testing.T) {
 	}
 }
 
-func TestGenerateConfigMergesExtraSubscriptions(t *testing.T) {
+// Subscriptions are profiles: only the active one reaches config.yaml, so an
+// inactive subscription's nodes must stay out of it.
+func TestGenerateConfigUsesOnlyTheActiveSubscription(t *testing.T) {
 	p := newTestPaths(t)
-	primary := serveConfig(t, sampleClashConfig)
-	extra := serveConfig(t, nodeOnlyConfig)
 	cfg := &config.Config{
 		MixedPort:      9190,
 		ControllerAddr: "127.0.0.1:9090",
 		Secret:         "s",
 		Subscriptions: []config.Subscription{
-			{Name: "primary", URL: primary},
-			{Name: "extra", URL: extra},
+			{ID: "a", Name: "primary", URL: serveConfig(t, sampleClashConfig)},
+			{ID: "b", Name: "other", URL: serveConfig(t, nodeOnlyConfig)},
 		},
+		ActiveSub: "a",
 	}
 
 	if err := GenerateConfig(p, cfg); err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
 	got := readConfig(t, p)
-	// The extra subscription's node joins the pool and the select groups.
+	if !strings.Contains(got, "HK-1") {
+		t.Errorf("active subscription's node missing:\n%s", got)
+	}
+	if strings.Contains(got, "N-1") {
+		t.Errorf("inactive subscription's node leaked into config.yaml:\n%s", got)
+	}
+}
+
+// Switching profiles must not touch the network: once a subscription has been
+// fetched, activating it replays the cached document.
+func TestSwitchActiveUsesCacheWithoutNetwork(t *testing.T) {
+	p := newTestPaths(t)
+	other := serveConfig(t, nodeOnlyConfig)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		Subscriptions: []config.Subscription{
+			{ID: "a", Name: "primary", URL: serveConfig(t, sampleClashConfig)},
+			{ID: "b", Name: "other", URL: other},
+		},
+		ActiveSub: "a",
+	}
+
+	// Cache both profiles, then make the second one unreachable.
+	if err := RefreshAll(p, cfg); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	if !Cached(p, cfg.Subscriptions[1]) {
+		t.Fatal("second subscription was not cached by RefreshAll")
+	}
+	cfg.Subscriptions[1].URL = "http://127.0.0.1:0/gone"
+
+	cfg.ActiveSub = "b"
+	if err := GenerateConfig(p, cfg); err != nil {
+		t.Fatalf("GenerateConfig after switch: %v", err)
+	}
+	got := readConfig(t, p)
 	if !strings.Contains(got, "N-1") {
-		t.Errorf("extra subscription node not merged:\n%s", got)
+		t.Errorf("switched-to profile not applied from cache:\n%s", got)
+	}
+	if strings.Contains(got, "HK-1") {
+		t.Errorf("previous profile's nodes survived the switch:\n%s", got)
+	}
+}
+
+func TestRefreshStampsUpdatedAtAndDropCache(t *testing.T) {
+	p := newTestPaths(t)
+	cfg := &config.Config{
+		MixedPort:      9190,
+		ControllerAddr: "127.0.0.1:9090",
+		Secret:         "s",
+		Subscriptions:  []config.Subscription{{ID: "a", Name: "primary", URL: serveConfig(t, sampleClashConfig)}},
+	}
+
+	before := time.Now()
+	if err := Refresh(p, cfg, 0); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if cfg.Subscriptions[0].UpdatedAt.Before(before) {
+		t.Errorf("UpdatedAt = %v, want at or after %v", cfg.Subscriptions[0].UpdatedAt, before)
+	}
+	if !Cached(p, cfg.Subscriptions[0]) {
+		t.Fatal("Refresh did not write a cache file")
+	}
+
+	if err := DropCache(p, cfg.Subscriptions[0]); err != nil {
+		t.Fatalf("DropCache: %v", err)
+	}
+	if Cached(p, cfg.Subscriptions[0]) {
+		t.Error("cache file survived DropCache")
+	}
+	// Dropping an already-absent cache is not an error.
+	if err := DropCache(p, cfg.Subscriptions[0]); err != nil {
+		t.Errorf("second DropCache: %v", err)
+	}
+}
+
+// A provider answering with an error page must not be cached as a valid profile.
+func TestRefreshRejectsNonClashDocument(t *testing.T) {
+	p := newTestPaths(t)
+	cfg := &config.Config{
+		Subscriptions: []config.Subscription{{ID: "a", Name: "expired", URL: serveConfig(t, "token expired")}},
+	}
+	if err := Refresh(p, cfg, 0); err == nil {
+		t.Fatal("expected an error for a document with no proxies")
+	}
+	if Cached(p, cfg.Subscriptions[0]) {
+		t.Error("a rejected document was still cached")
+	}
+	if !cfg.Subscriptions[0].UpdatedAt.IsZero() {
+		t.Error("a failed fetch stamped UpdatedAt")
+	}
+}
+
+func TestDueRespectsPerSubscriptionPolicy(t *testing.T) {
+	now := time.Now()
+	cfg := &config.Config{
+		SubInterval: "12h",
+		Subscriptions: []config.Subscription{
+			{ID: "never", Name: "never fetched"},
+			{ID: "fresh", Name: "fetched an hour ago", UpdatedAt: now.Add(-time.Hour)},
+			{ID: "short", Name: "own short interval", Interval: "30m", UpdatedAt: now.Add(-time.Hour)},
+			{ID: "manual", Name: "auto-update off", NoAutoUpdate: true},
+			{ID: "paused", Name: "disabled", Disabled: true},
+		},
+	}
+
+	got := Due(cfg, now)
+	want := []int{0, 2}
+	if len(got) != len(want) {
+		t.Fatalf("Due = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Due = %v, want %v", got, want)
+		}
 	}
 }
 

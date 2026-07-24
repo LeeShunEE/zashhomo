@@ -221,12 +221,21 @@ Usage:
   zashhomo system-proxy enable|disable
                               Set or clear the OS system proxy (points at the mixed-port)
   zashhomo update [flags]     Update components (--core --ui --self --all)
-  zashhomo sub add <url>      Add a subscription
-  zashhomo sub remove <index> Remove the subscription at <index> (see 'sub list')
-  zashhomo sub list           List subscriptions (metadata + edit hints)
-  zashhomo sub edit           Open the config file in your editor
+  zashhomo sub add <url> [name]
+                              Add a subscription and download it into the cache
+  zashhomo sub list           List subscriptions with their state (▸ marks the active one)
+  zashhomo sub show <index>   Show one subscription in full
+  zashhomo sub switch <index> Make that subscription the active profile (reads the cache)
+  zashhomo sub update [index] Refresh one subscription, or every enabled one
+  zashhomo sub enable|disable <index>
+                              Resume or pause a subscription (paused ones never refresh)
+  zashhomo sub auto <index> on|off
+                              Turn that subscription's scheduled update on or off
   zashhomo sub interval [dur] Show or set the global refresh interval (e.g. 6h)
-  zashhomo sub update         Regenerate config and hot-reload the kernel
+  zashhomo sub interval <index> <dur>
+                              Give one subscription its own interval ('default' to clear)
+  zashhomo sub remove <index> Remove the subscription at <index> (see 'sub list')
+  zashhomo sub edit           Open the config file in your editor
   zashhomo uninstall [--purge] Stop & remove the service (and files with --purge)
   zashhomo version            Print version
 
@@ -529,10 +538,17 @@ func cmdMenu(_ []string) error {
 				printCmdError(err)
 			}
 		case "sub-interval":
-			val := promptLine("Refresh interval (e.g. 6h, 30m; blank to cancel): ")
+			val := promptLine("Global refresh interval (e.g. 6h, 30m; blank to cancel): ")
 			if val == "" {
 				fmt.Println("cancelled")
 			} else if err := dispatch("sub", []string{"interval", val}); err != nil {
+				printCmdError(err)
+			}
+		case "sub-interval-at":
+			val := promptLine("Update interval for this subscription (e.g. 6h, 30m; 'default' to follow the global one; blank to cancel): ")
+			if val == "" {
+				fmt.Println("cancelled")
+			} else if err := dispatch("sub", []string{"interval", fields[1], val}); err != nil {
 				printCmdError(err)
 			}
 		default:
@@ -957,7 +973,7 @@ func selfAssetName(_ string) string {
 
 func cmdSub(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("sub: expected 'add <url>', 'remove <index>', 'list', or 'update'")
+		return fmt.Errorf("sub: expected 'add', 'list', 'show', 'switch', 'enable', 'disable', 'auto', 'interval', 'update', 'remove', or 'edit'")
 	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)
@@ -967,150 +983,394 @@ func cmdSub(args []string) error {
 
 	switch args[0] {
 	case "add":
-		if len(args) < 2 {
-			return fmt.Errorf("sub add: missing <url>")
-		}
-		url := args[1]
-		name := ""
-		if len(args) >= 3 {
-			name = args[2]
-		}
-		cfg.AddSubscription(name, url)
-		// The new subscription is fetched here, so this waits on the network.
-		if err := ui.Run("Fetching subscription", "✓", func() error {
-			if err := subscription.GenerateConfig(p, cfg); err != nil {
-				return err
-			}
-			return cfg.Save()
-		}); err != nil {
-			return err
-		}
-		fmt.Printf("added subscription (%d total)\n", len(cfg.Subscriptions))
-		// Try a live reload; ignore errors when the service isn't running.
-		if err := ui.Run("Reloading kernel", "✓", func() error {
-			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
-		}); err != nil {
-			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
-		}
-		return nil
-
+		return subAdd(p, cfg, args[1:])
 	case "update":
-		if err := ui.Run("Fetching subscriptions", "✓", func() error {
-			return subscription.GenerateConfig(p, cfg)
-		}); err != nil {
-			return err
-		}
-		if err := ui.Run("Reloading kernel", "✓", func() error {
-			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
-		}); err != nil {
-			return fmt.Errorf("reload (is the service running?): %w", err)
-		}
-		return nil
-
+		return subUpdate(p, cfg, args[1:])
+	case "switch", "use", "activate":
+		return subSwitch(p, cfg, args[1:])
+	case "enable":
+		return subSetEnabled(p, cfg, args[1:], true)
+	case "disable":
+		return subSetEnabled(p, cfg, args[1:], false)
+	case "auto":
+		return subAuto(cfg, args[1:])
+	case "interval":
+		return subInterval(p, cfg, args[1:])
 	case "list", "ls":
 		printSubscriptions(p, cfg)
 		return nil
-
 	case "show":
-		if len(args) < 2 {
-			return fmt.Errorf("sub show: missing <index>")
-		}
-		var index int
-		if _, err := fmt.Sscanf(args[1], "%d", &index); err != nil {
-			return fmt.Errorf("sub show: invalid index %q", args[1])
-		}
-		if index < 0 || index >= len(cfg.Subscriptions) {
-			return fmt.Errorf("sub show: index %d out of range (0-%d)", index, len(cfg.Subscriptions)-1)
-		}
-		sub := cfg.Subscriptions[index]
-		name := sub.Name
-		if name == "" {
-			name = fmt.Sprintf("sub-%d", index)
-		}
-
-		// Display subscription details with themed output
-		line := func(label, value string) string {
-			return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
-		}
-
-		fmt.Print(line("name:  ", name))
-		fmt.Print(line("url:   ", sub.URL))
-		fmt.Print(line("index: ", fmt.Sprintf("%d", index)))
-		return nil
-
+		return subShow(p, cfg, args[1:])
 	case "remove", "rm", "del", "delete":
-		if len(args) < 2 {
-			return fmt.Errorf("sub remove: missing <index>")
-		}
-		var index int
-		if _, err := fmt.Sscanf(args[1], "%d", &index); err != nil {
-			return fmt.Errorf("sub remove: invalid index %q", args[1])
-		}
-		if index < 0 || index >= len(cfg.Subscriptions) {
-			return fmt.Errorf("sub remove: index %d out of range (0-%d)", index, len(cfg.Subscriptions)-1)
-		}
-		removed := cfg.Subscriptions[index]
-		name := removed.Name
-		if name == "" {
-			name = fmt.Sprintf("sub-%d", index)
-		}
-		if err := cfg.RemoveSubscription(index); err != nil {
+		return subRemove(p, cfg, args[1:])
+	case "edit":
+		return openInEditor(p.Config)
+	default:
+		return fmt.Errorf("sub: unknown subcommand %q", args[0])
+	}
+}
+
+// subIndex parses a subscription index argument and checks it against cfg.
+func subIndex(cfg *config.Config, cmd, arg string) (int, error) {
+	index, err := strconv.Atoi(arg)
+	if err != nil {
+		return 0, fmt.Errorf("sub %s: invalid index %q", cmd, arg)
+	}
+	if index < 0 || index >= len(cfg.Subscriptions) {
+		return 0, fmt.Errorf("sub %s: index %d out of range (0-%d)", cmd, index, len(cfg.Subscriptions)-1)
+	}
+	return index, nil
+}
+
+// applyActive regenerates config.yaml from the active subscription and asks a
+// running kernel to reload it. Every command that changes which profile is live,
+// or refreshes the live one, ends here. A failed reload is reported as a hint
+// rather than an error: with the service stopped there is simply nothing to
+// reload, and the config on disk is already correct.
+func applyActive(p *paths.Paths, cfg *config.Config) error {
+	if err := ui.Run("Writing mihomo config", "✓", func() error {
+		return subscription.GenerateConfig(p, cfg)
+	}); err != nil {
+		return err
+	}
+	if err := ui.Run("Reloading kernel", "✓", func() error {
+		return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
+	}); err != nil {
+		fmt.Println("run `zashhomo service restart` (or start the service) to apply")
+	}
+	return nil
+}
+
+// subAdd registers a new subscription and downloads it into the profile cache.
+// The first subscription added becomes the active one, so it also takes effect
+// immediately; later ones are cached and wait to be switched to.
+func subAdd(p *paths.Paths, cfg *config.Config, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("sub add: missing <url>")
+	}
+	name := ""
+	if len(args) >= 2 {
+		name = args[1]
+	}
+	index := cfg.AddSubscription(name, args[0])
+
+	if err := ui.Run("Fetching subscription", "✓", func() error {
+		if err := subscription.Refresh(p, cfg, index); err != nil {
 			return err
 		}
-		// Regenerating refetches the remaining subscriptions, so this is
-		// network-bound even though the removal itself is local.
-		if err := ui.Run("Rewriting mihomo config", "✓", func() error {
-			if err := subscription.GenerateConfig(p, cfg); err != nil {
+		return cfg.Save()
+	}); err != nil {
+		return err
+	}
+
+	sub := cfg.Subscriptions[index]
+	fmt.Printf("added subscription %q (%d total)\n", sub.DisplayName(index), len(cfg.Subscriptions))
+	if cfg.ActiveIndex() != index {
+		fmt.Printf("it is cached but not active; switch to it with:  zashhomo sub switch %d\n", index)
+		return nil
+	}
+	return applyActive(p, cfg)
+}
+
+// subUpdate refreshes the cached document of one subscription, or of every
+// enabled one when no index is given. The kernel is only reloaded when the
+// active profile actually changed.
+func subUpdate(p *paths.Paths, cfg *config.Config, args []string) error {
+	active := cfg.ActiveIndex()
+	touchedActive := false
+
+	if len(args) == 0 {
+		if len(cfg.Subscriptions) == 0 {
+			fmt.Println("no subscriptions configured — add one with:  zashhomo sub add <url>")
+			return nil
+		}
+		if err := ui.Run("Fetching subscriptions", "✓", func() error {
+			err := subscription.RefreshAll(p, cfg)
+			if saveErr := cfg.Save(); err == nil {
+				err = saveErr
+			}
+			return err
+		}); err != nil {
+			return err
+		}
+		touchedActive = active >= 0
+	} else {
+		index, err := subIndex(cfg, "update", args[0])
+		if err != nil {
+			return err
+		}
+		if err := ui.Run("Fetching "+cfg.Subscriptions[index].DisplayName(index), "✓", func() error {
+			if err := subscription.Refresh(p, cfg, index); err != nil {
 				return err
 			}
 			return cfg.Save()
 		}); err != nil {
 			return err
 		}
-		fmt.Printf("removed subscription %q (%d remaining)\n", name, len(cfg.Subscriptions))
-		// Try a live reload; ignore errors when the service isn't running.
-		if err := ui.Run("Reloading kernel", "✓", func() error {
-			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
-		}); err != nil {
-			fmt.Println("run `zashhomo service restart` (or start the service) to apply")
-		}
+		touchedActive = index == active
+	}
+
+	if !touchedActive {
+		fmt.Println("updated; it is not the active subscription, so the kernel is unchanged")
 		return nil
+	}
+	return applyActive(p, cfg)
+}
 
-	case "edit":
-		return openInEditor(p.Config)
+// subSwitch makes another subscription the active profile. It reads the cache,
+// so switching works offline once a subscription has been fetched.
+func subSwitch(p *paths.Paths, cfg *config.Config, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("sub switch: missing <index> (see 'zashhomo sub list')")
+	}
+	index, err := subIndex(cfg, "switch", args[0])
+	if err != nil {
+		return err
+	}
+	if index == cfg.ActiveIndex() {
+		fmt.Printf("%q is already the active subscription\n", cfg.Subscriptions[index].DisplayName(index))
+		return nil
+	}
+	if err := cfg.SetActive(index); err != nil {
+		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Printf("switched to %q\n", cfg.Subscriptions[index].DisplayName(index))
+	return applyActive(p, cfg)
+}
 
-	case "interval":
-		if len(args) < 2 {
-			fmt.Printf("refresh interval: %s\n", cfg.RefreshInterval())
-			fmt.Println("set with:  zashhomo sub interval <duration>   (e.g. 6h, 30m, 90m)")
-			return nil
-		}
-		if err := cfg.SetRefreshInterval(args[1]); err != nil {
+// subSetEnabled pauses or resumes a subscription. Disabling the active one hands
+// the active slot to the next enabled profile, which is a change to what the
+// kernel routes through, so config.yaml is rewritten in that case.
+func subSetEnabled(p *paths.Paths, cfg *config.Config, args []string, enable bool) error {
+	verb := "disable"
+	if enable {
+		verb = "enable"
+	}
+	if len(args) < 1 {
+		return fmt.Errorf("sub %s: missing <index> (see 'zashhomo sub list')", verb)
+	}
+	index, err := subIndex(cfg, verb, args[0])
+	if err != nil {
+		return err
+	}
+	before := cfg.ActiveIndex()
+	if err := cfg.SetSubEnabled(index, enable); err != nil {
+		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+
+	name := cfg.Subscriptions[index].DisplayName(index)
+	after := cfg.ActiveIndex()
+	if enable {
+		fmt.Printf("enabled %q\n", name)
+	} else {
+		fmt.Printf("disabled %q — it no longer refreshes and cannot be switched to\n", name)
+	}
+	if after == before {
+		return nil
+	}
+	if after < 0 {
+		fmt.Println("no enabled subscription left; falling back to a direct-only config")
+	} else {
+		fmt.Printf("active subscription is now %q\n", cfg.Subscriptions[after].DisplayName(after))
+	}
+	return applyActive(p, cfg)
+}
+
+// subAuto turns a subscription's scheduled refresh on or off. Nothing the kernel
+// reads changes, so there is no config to rewrite.
+func subAuto(cfg *config.Config, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("sub auto: expected <index> on|off")
+	}
+	index, err := subIndex(cfg, "auto", args[0])
+	if err != nil {
+		return err
+	}
+	var on bool
+	switch strings.ToLower(args[1]) {
+	case "on", "true", "yes", "enable":
+		on = true
+	case "off", "false", "no", "disable":
+		on = false
+	default:
+		return fmt.Errorf("sub auto: expected on|off, got %q", args[1])
+	}
+	if err := cfg.SetSubAutoUpdate(index, on); err != nil {
+		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	s := cfg.Subscriptions[index]
+	if on {
+		fmt.Printf("scheduled update enabled for %q (every %s)\n", s.DisplayName(index), s.RefreshIntervalOr(cfg.RefreshInterval()))
+	} else {
+		fmt.Printf("scheduled update disabled for %q — refresh it by hand with:  zashhomo sub update %d\n", s.DisplayName(index), index)
+	}
+	return nil
+}
+
+// subInterval shows or sets a refresh interval. With no numeric index it acts on
+// the global default; with one it sets that subscription's own interval, where
+// "default" clears the override and puts it back on the global one. A duration
+// always carries a unit, so a leading integer is unambiguously an index.
+func subInterval(p *paths.Paths, cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		fmt.Printf("global refresh interval: %s\n", cfg.RefreshInterval())
+		fmt.Println("set with:  zashhomo sub interval <duration>          (e.g. 6h, 30m, 90m)")
+		fmt.Println("per sub:   zashhomo sub interval <index> <duration>  ('default' follows the global one)")
+		return nil
+	}
+
+	// Global form: `sub interval 6h`.
+	if _, err := strconv.Atoi(args[0]); err != nil {
+		if err := cfg.SetRefreshInterval(args[0]); err != nil {
 			return err
 		}
 		if err := cfg.Save(); err != nil {
 			return err
 		}
-		// Regenerate config so the new interval reaches the proxy-providers, then
-		// hot-reload if the kernel is up. The daemon's own refresh loop reads the
-		// interval at startup, so a restart is still needed to change its cadence.
-		if err := ui.Run("Rewriting mihomo config", "✓", func() error {
-			return subscription.GenerateConfig(p, cfg)
-		}); err != nil {
-			return err
-		}
-		fmt.Printf("refresh interval set to %s\n", cfg.RefreshInterval())
-		// Best effort: a stopped kernel has nothing to reload, and the restart hint
-		// below already covers that case.
-		_ = ui.Run("Reloading kernel", "✓", func() error {
-			return subscription.Reload(context.Background(), cfg, p.MihomoConfig())
-		})
-		fmt.Println("restart the service to apply the daemon refresh cycle:  zashhomo service restart")
+		fmt.Printf("global refresh interval set to %s\n", cfg.RefreshInterval())
+		fmt.Println("subscriptions with their own interval are unaffected")
 		return nil
-
-	default:
-		return fmt.Errorf("sub: unknown subcommand %q", args[0])
 	}
+
+	// Per-subscription form: `sub interval 0 [6h|default]`.
+	index, err := subIndex(cfg, "interval", args[0])
+	if err != nil {
+		return err
+	}
+	if len(args) < 2 {
+		s := cfg.Subscriptions[index]
+		fmt.Printf("%s: refreshes every %s%s\n", s.DisplayName(index),
+			s.RefreshIntervalOr(cfg.RefreshInterval()), intervalOrigin(s))
+		return nil
+	}
+	value := args[1]
+	if strings.EqualFold(value, "default") || strings.EqualFold(value, "global") {
+		value = ""
+	}
+	if err := cfg.SetSubInterval(index, value); err != nil {
+		return err
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	s := cfg.Subscriptions[index]
+	fmt.Printf("%s: refreshes every %s%s\n", s.DisplayName(index),
+		s.RefreshIntervalOr(cfg.RefreshInterval()), intervalOrigin(s))
+	if !s.AutoUpdate() {
+		fmt.Println(theme.Hint.Render("scheduled update is currently off for this subscription, so the interval is not in effect"))
+	}
+	return nil
+}
+
+// intervalOrigin annotates an interval with where it came from, so " (global)"
+// distinguishes a subscription that merely follows the default from one that
+// happens to have set the same value.
+func intervalOrigin(s config.Subscription) string {
+	if s.Interval == "" {
+		return " (global default)"
+	}
+	return " (its own setting)"
+}
+
+// subShow prints one subscription's full state.
+func subShow(p *paths.Paths, cfg *config.Config, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("sub show: missing <index>")
+	}
+	index, err := subIndex(cfg, "show", args[0])
+	if err != nil {
+		return err
+	}
+	s := cfg.Subscriptions[index]
+
+	line := func(label, value string) string {
+		return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
+	}
+	state := "enabled"
+	if !s.Enabled() {
+		state = theme.StatusWarn.Render("disabled")
+	}
+	if index == cfg.ActiveIndex() {
+		state += theme.StatusOk.Render("  (active)")
+	}
+	auto := "on, every " + s.RefreshIntervalOr(cfg.RefreshInterval()).String() + intervalOrigin(s)
+	if !s.AutoUpdate() {
+		auto = "off"
+	}
+
+	fmt.Print(line("name:     ", s.DisplayName(index)))
+	fmt.Print(line("index:    ", strconv.Itoa(index)))
+	fmt.Print(line("url:      ", s.URL))
+	fmt.Print(line("state:    ", state))
+	fmt.Print(line("schedule: ", auto))
+	fmt.Print(line("updated:  ", lastUpdated(s)))
+	fmt.Print(line("cached:   ", cachedState(p, s)))
+	return nil
+}
+
+// subRemove deletes a subscription and its cached document. The caller has
+// already confirmed when this comes from the menu; from the CLI the index is
+// explicit enough to be its own confirmation.
+func subRemove(p *paths.Paths, cfg *config.Config, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("sub remove: missing <index>")
+	}
+	index, err := subIndex(cfg, "remove", args[0])
+	if err != nil {
+		return err
+	}
+	removed := cfg.Subscriptions[index]
+	name := removed.DisplayName(index)
+	wasActive := index == cfg.ActiveIndex()
+
+	if err := cfg.RemoveSubscription(index); err != nil {
+		return err
+	}
+	// Best effort: an orphaned cache file is harmless, and failing the removal
+	// over it would leave the config and the cache disagreeing.
+	if err := subscription.DropCache(p, removed); err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not delete the cached copy: %v\n", err)
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Printf("removed subscription %q (%d remaining)\n", name, len(cfg.Subscriptions))
+
+	if !wasActive {
+		return nil
+	}
+	if active := cfg.ActiveIndex(); active >= 0 {
+		fmt.Printf("active subscription is now %q\n", cfg.Subscriptions[active].DisplayName(active))
+	} else {
+		fmt.Println("no subscriptions left; falling back to a direct-only config")
+	}
+	return applyActive(p, cfg)
+}
+
+// lastUpdated renders when a subscription was last fetched, as an age.
+func lastUpdated(s config.Subscription) string {
+	if s.UpdatedAt.IsZero() {
+		return "never"
+	}
+	return fmt.Sprintf("%s (%s ago)", s.UpdatedAt.Format("2006-01-02 15:04"),
+		time.Since(s.UpdatedAt).Round(time.Minute))
+}
+
+// cachedState reports whether a subscription can be switched to without network.
+func cachedState(p *paths.Paths, s config.Subscription) string {
+	if subscription.Cached(p, s) {
+		return "yes (switching to it needs no network)"
+	}
+	return theme.StatusWarn.Render("no (it will be downloaded on first use)")
 }
 
 // promptRemoveSubscription lists the configured subscriptions and asks which one
@@ -1137,10 +1397,14 @@ func removeSubscriptionAt(args []string) error {
 	}
 	s := cfg.Subscriptions[index]
 
+	warning := "This cannot be undone — the entry and its cached copy are deleted from disk."
+	if index == cfg.ActiveIndex() {
+		warning = "This is the active subscription. Deleting it switches to the next enabled one (or to a direct-only config), and cannot be undone."
+	}
 	ok, err := runConfirm(confirmModel{
 		title:    "Remove this subscription?",
 		details:  []string{subscriptionName(index, s), s.URL},
-		warning:  "This cannot be undone — the entry is deleted from the config, and its nodes disappear on the next reload.",
+		warning:  warning,
 		yesLabel: "Delete it",
 		danger:   true,
 	})
@@ -1154,15 +1418,16 @@ func removeSubscriptionAt(args []string) error {
 	return dispatch("sub", []string{"remove", strconv.Itoa(index)})
 }
 
-// printSubscriptions lists the configured subscriptions with their metadata and
-// the config path, plus the commands that edit them.
+// printSubscriptions lists the configured subscriptions with their per-entry
+// state, marking the active profile, plus the commands that edit them.
 func printSubscriptions(p *paths.Paths, cfg *config.Config) {
 	line := func(label, value string) string {
 		return theme.OutputLabel.Render(label) + theme.OutputValue.Render(value) + "\n"
 	}
 
 	fmt.Print(line("config:   ", p.Config))
-	fmt.Print(line("interval: ", cfg.RefreshInterval().String()))
+	fmt.Print(line("interval: ", cfg.RefreshInterval().String()+" (global default)"))
+	fmt.Print(line("active:   ", activeSubLabel(cfg)))
 
 	if len(cfg.Subscriptions) == 0 {
 		fmt.Print(line("subs:     ", "none"))
@@ -1173,18 +1438,32 @@ func printSubscriptions(p *paths.Paths, cfg *config.Config) {
 	fmt.Print(line("subs:     ", fmt.Sprintf("%d", len(cfg.Subscriptions))))
 	fmt.Println()
 
+	active := cfg.ActiveIndex()
 	for i, s := range cfg.Subscriptions {
-		name := s.Name
-		if name == "" {
-			name = fmt.Sprintf("sub-%d", i)
+		marker := "  "
+		if i == active {
+			marker = theme.StatusOk.Render("▸ ")
 		}
-		fmt.Printf("  [%d] %s\n", i, theme.OutputValue.Render(name))
+		fmt.Printf("%s[%d] %s%s\n", marker, i, theme.OutputValue.Render(s.DisplayName(i)), subscriptionTags(s, i == active))
 		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
+		fmt.Printf("      %s\n", theme.Hint.Render("updated "+lastUpdated(s)+" · "+scheduleSummary(cfg, s)))
 	}
 
-	fmt.Println("\nedit:    zashhomo sub edit             (open config file)")
-	fmt.Println("         zashhomo sub interval <dur>  (set refresh interval, e.g. 6h)")
-	fmt.Println("remove:  zashhomo sub remove <index>  (delete a subscription)")
+	fmt.Println("\nswitch:  zashhomo sub switch <index>          (make it the active profile)")
+	fmt.Println("update:  zashhomo sub update [index]          (refresh one, or every enabled one)")
+	fmt.Println("pause:   zashhomo sub enable|disable <index>")
+	fmt.Println("timer:   zashhomo sub auto <index> on|off")
+	fmt.Println("         zashhomo sub interval <index> <dur>  ('default' follows the global one)")
+	fmt.Println("remove:  zashhomo sub remove <index>          (delete a subscription)")
+	fmt.Println("edit:    zashhomo sub edit                    (open config file)")
+}
+
+// scheduleSummary describes a subscription's refresh timer in one phrase.
+func scheduleSummary(cfg *config.Config, s config.Subscription) string {
+	if !s.AutoUpdate() {
+		return "scheduled update off"
+	}
+	return "every " + s.RefreshIntervalOr(cfg.RefreshInterval()).String() + intervalOrigin(s)
 }
 
 // openInEditor opens path in the user's editor: $VISUAL or $EDITOR when set,

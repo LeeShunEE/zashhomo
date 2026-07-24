@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefault(t *testing.T) {
@@ -227,6 +228,163 @@ func TestRemoveSubscription(t *testing.T) {
 	}
 	if cfg.Subscriptions[0].Name != "a" || cfg.Subscriptions[1].Name != "c" {
 		t.Errorf("unexpected order after remove: %q, %q", cfg.Subscriptions[0].Name, cfg.Subscriptions[1].Name)
+	}
+}
+
+// The first subscription added becomes the active one, and adding more does not
+// steal the slot from it.
+func TestAddSubscriptionSetsActive(t *testing.T) {
+	cfg := Default()
+	if cfg.ActiveIndex() != -1 {
+		t.Errorf("empty config ActiveIndex = %d, want -1", cfg.ActiveIndex())
+	}
+
+	cfg.AddSubscription("a", "https://example.com/a")
+	if got := cfg.ActiveIndex(); got != 0 {
+		t.Fatalf("ActiveIndex after first add = %d, want 0", got)
+	}
+	cfg.AddSubscription("b", "https://example.com/b")
+	if got := cfg.ActiveIndex(); got != 0 {
+		t.Errorf("ActiveIndex after second add = %d, want it to stay 0", got)
+	}
+	if cfg.Subscriptions[0].ID == "" || cfg.Subscriptions[0].ID == cfg.Subscriptions[1].ID {
+		t.Errorf("subscriptions must get distinct non-empty IDs, got %q and %q",
+			cfg.Subscriptions[0].ID, cfg.Subscriptions[1].ID)
+	}
+}
+
+func TestSetActive(t *testing.T) {
+	cfg := Default()
+	cfg.AddSubscription("a", "https://example.com/a")
+	cfg.AddSubscription("b", "https://example.com/b")
+
+	if err := cfg.SetActive(1); err != nil {
+		t.Fatalf("SetActive(1): %v", err)
+	}
+	if got := cfg.ActiveIndex(); got != 1 {
+		t.Errorf("ActiveIndex = %d, want 1", got)
+	}
+	if err := cfg.SetActive(5); err == nil {
+		t.Error("out-of-range SetActive should fail")
+	}
+
+	// Switching to a paused profile would silently un-pause it; refuse instead.
+	if err := cfg.SetSubEnabled(0, false); err != nil {
+		t.Fatalf("SetSubEnabled: %v", err)
+	}
+	if err := cfg.SetActive(0); err == nil {
+		t.Error("SetActive on a disabled subscription should fail")
+	}
+}
+
+// Disabling or removing the active subscription hands the slot to the next
+// enabled one, so the kernel is never pointed at a paused or missing profile.
+func TestActiveFollowsEnabledSubscriptions(t *testing.T) {
+	cfg := Default()
+	cfg.AddSubscription("a", "https://example.com/a")
+	cfg.AddSubscription("b", "https://example.com/b")
+
+	if err := cfg.SetSubEnabled(0, false); err != nil {
+		t.Fatalf("SetSubEnabled: %v", err)
+	}
+	if got := cfg.ActiveIndex(); got != 1 {
+		t.Errorf("ActiveIndex after disabling the active one = %d, want 1", got)
+	}
+
+	// Re-enabling does not take the slot back; that is an explicit switch.
+	if err := cfg.SetSubEnabled(0, true); err != nil {
+		t.Fatalf("SetSubEnabled: %v", err)
+	}
+	if got := cfg.ActiveIndex(); got != 1 {
+		t.Errorf("ActiveIndex after re-enabling = %d, want it to stay 1", got)
+	}
+
+	if err := cfg.RemoveSubscription(1); err != nil {
+		t.Fatalf("RemoveSubscription: %v", err)
+	}
+	if got := cfg.ActiveIndex(); got != 0 {
+		t.Errorf("ActiveIndex after removing the active one = %d, want 0", got)
+	}
+
+	// With every subscription disabled there is no active one at all.
+	if err := cfg.SetSubEnabled(0, false); err != nil {
+		t.Fatalf("SetSubEnabled: %v", err)
+	}
+	if got := cfg.ActiveIndex(); got != -1 {
+		t.Errorf("ActiveIndex with all disabled = %d, want -1", got)
+	}
+}
+
+func TestSubscriptionRefreshPolicy(t *testing.T) {
+	cfg := Default() // global interval 12h
+	cfg.AddSubscription("a", "https://example.com/a")
+
+	global := cfg.RefreshInterval()
+	if got := cfg.Subscriptions[0].RefreshIntervalOr(global); got != 12*time.Hour {
+		t.Errorf("default interval = %v, want the global 12h", got)
+	}
+
+	if err := cfg.SetSubInterval(0, "30m"); err != nil {
+		t.Fatalf("SetSubInterval: %v", err)
+	}
+	if got := cfg.Subscriptions[0].RefreshIntervalOr(global); got != 30*time.Minute {
+		t.Errorf("own interval = %v, want 30m", got)
+	}
+	if err := cfg.SetSubInterval(0, "nonsense"); err == nil {
+		t.Error("an unparseable interval should be rejected")
+	}
+	if got := cfg.Subscriptions[0].Interval; got != "30m" {
+		t.Errorf("a rejected interval overwrote the stored one: %q", got)
+	}
+
+	// An empty value clears the override, putting it back on the global one.
+	if err := cfg.SetSubInterval(0, ""); err != nil {
+		t.Fatalf("SetSubInterval(clear): %v", err)
+	}
+	if got := cfg.Subscriptions[0].RefreshIntervalOr(global); got != 12*time.Hour {
+		t.Errorf("cleared interval = %v, want the global 12h", got)
+	}
+
+	if !cfg.Subscriptions[0].AutoUpdate() {
+		t.Error("auto-update should default to on")
+	}
+	if err := cfg.SetSubAutoUpdate(0, false); err != nil {
+		t.Fatalf("SetSubAutoUpdate: %v", err)
+	}
+	if cfg.Subscriptions[0].AutoUpdate() {
+		t.Error("auto-update should be off after SetSubAutoUpdate(false)")
+	}
+}
+
+// A config written before profiles existed has neither IDs nor an active
+// pointer; loading it must backfill both rather than leaving them unusable.
+func TestLoadBackfillsIDsAndActive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "zashhomo.yaml")
+	legacy := "subscriptions:\n" +
+		"  - name: a\n    url: https://example.com/a\n" +
+		"  - name: b\n    url: https://example.com/b\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for i, s := range cfg.Subscriptions {
+		if s.ID == "" {
+			t.Errorf("subscription %d got no ID", i)
+		}
+		if !s.Enabled() || !s.AutoUpdate() {
+			t.Errorf("subscription %d should default to enabled with auto-update on", i)
+		}
+	}
+	if got := cfg.ActiveIndex(); got != 0 {
+		t.Errorf("ActiveIndex = %d, want the first subscription", got)
+	}
+	if cfg.ActiveSub != cfg.Subscriptions[0].ID {
+		t.Errorf("ActiveSub = %q, want %q", cfg.ActiveSub, cfg.Subscriptions[0].ID)
 	}
 }
 

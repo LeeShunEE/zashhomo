@@ -131,34 +131,83 @@ func Run(ctx context.Context, p *paths.Paths, cfg *config.Config) error {
 	return nil
 }
 
-// refreshLoop reloads the kernel config on cfg.RefreshInterval so proxy
-// providers pick up subscription changes.
+// refreshCheckInterval is how often the daemon looks for a subscription that has
+// come due. Each subscription carries its own schedule, so there is no single
+// cadence to tick on: the loop wakes up often and usually finds nothing to do.
+const refreshCheckInterval = time.Minute
+
+// refreshLoop keeps every subscription's cached document up to date on its own
+// schedule, regenerating config.yaml and reloading the kernel whenever the
+// active one changes.
 func refreshLoop(ctx context.Context, p *paths.Paths, cfg *config.Config, cfgMu *sync.Mutex, logger *log.Logger) {
-	if len(cfg.Subscriptions) == 0 {
-		return
-	}
-	interval := cfg.RefreshInterval()
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(refreshCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cfgMu.Lock()
-			err := subscription.GenerateConfig(p, cfg)
-			cfgMu.Unlock()
-			if err != nil {
-				logger.Printf("refresh: regenerate config: %v", err)
+			if !refreshDue(p, cfg, cfgMu, logger) {
 				continue
 			}
 			if err := subscription.Reload(ctx, cfg, p.MihomoConfig()); err != nil {
 				logger.Printf("refresh: reload: %v", err)
 				continue
 			}
-			logger.Printf("subscriptions refreshed")
+			logger.Printf("kernel reloaded with the refreshed active subscription")
 		}
 	}
+}
+
+// refreshDue fetches whichever subscriptions have come due and reports whether
+// the active one was among them, i.e. whether the kernel needs a reload. It
+// holds cfgMu for the whole pass so the tun-sync loop can't save a half-updated
+// config underneath it.
+func refreshDue(p *paths.Paths, cfg *config.Config, cfgMu *sync.Mutex, logger *log.Logger) bool {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+
+	// Re-read the subscription settings each pass so a profile switched, added,
+	// or rescheduled from the CLI takes effect without restarting the service.
+	// Everything else in cfg (notably Tun) is the daemon's own live state and is
+	// deliberately left alone.
+	if fresh, err := config.Load(p.Config); err == nil {
+		cfg.Subscriptions = fresh.Subscriptions
+		cfg.ActiveSub = fresh.ActiveSub
+		cfg.SubInterval = fresh.SubInterval
+	}
+
+	due := subscription.Due(cfg, time.Now())
+	if len(due) == 0 {
+		return false
+	}
+
+	active := cfg.ActiveIndex()
+	activeRefreshed := false
+	for _, i := range due {
+		name := cfg.Subscriptions[i].DisplayName(i)
+		if err := subscription.Refresh(p, cfg, i); err != nil {
+			logger.Printf("refresh subscription %s: %v", name, err)
+			continue
+		}
+		logger.Printf("subscription %s refreshed", name)
+		if i == active {
+			activeRefreshed = true
+		}
+	}
+	// Persist the new UpdatedAt stamps; without them every pass would find the
+	// same subscriptions due and refetch them a minute later.
+	if err := cfg.Save(); err != nil {
+		logger.Printf("refresh: save config: %v", err)
+	}
+	if !activeRefreshed {
+		return false
+	}
+	if err := subscription.GenerateConfig(p, cfg); err != nil {
+		logger.Printf("refresh: regenerate config: %v", err)
+		return false
+	}
+	return true
 }
 
 // tunSyncInterval is how often the tun-sync loop polls the kernel's live config.

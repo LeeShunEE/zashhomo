@@ -118,6 +118,7 @@ func (p *Paths) EnsureDirs() error {
 		p.Bin,
 		p.UI,
 		filepath.Join(p.Data, "providers"),
+		filepath.Join(p.Data, "subs"),
 		filepath.Dir(p.Config),
 	}
 	for _, d := range dirs {
@@ -141,6 +142,19 @@ func (p *Paths) MihomoConfig() string {
 // ProvidersDir returns the directory mihomo proxy-providers are cached in.
 func (p *Paths) ProvidersDir() string {
 	return filepath.Join(p.Data, "providers")
+}
+
+// SubsDir returns the directory each subscription's fetched clash document is
+// cached in, one file per subscription. Keeping every profile on disk is what
+// lets zashhomo switch between them without going back to the network.
+func (p *Paths) SubsDir() string {
+	return filepath.Join(p.Data, "subs")
+}
+
+// SubFile returns the cache file holding the document last fetched for the
+// subscription identified by id.
+func (p *Paths) SubFile(id string) string {
+	return filepath.Join(p.SubsDir(), id+".yaml")
 }
 
 // UIIndex returns the expected zashboard entrypoint file.

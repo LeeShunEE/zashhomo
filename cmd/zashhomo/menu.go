@@ -27,12 +27,16 @@ func init() {
 // "zashhomo" prefix) run when the item is chosen; when sub is non-empty the
 // item opens a submenu instead and action is ignored. A non-empty disabled
 // reason means the action doesn't apply in the current state: the row is greyed
-// but still selectable, and choosing it prompts for confirmation before forcing.
+// but still selectable, and choosing it prompts for confirmation before forcing
+// — unless its action is the "noop" sentinel, which makes the row inert and the
+// reason purely informational. An info row is not a choice at all: it displays
+// state at the top of a menu and the cursor skips over it.
 type menuItem struct {
 	label    string
 	action   string
 	sub      []menuItem
 	disabled string
+	info     bool
 }
 
 // menuHeader renders the big banner plus a compact status block for st. It is
@@ -68,7 +72,7 @@ func menuHeader(st svc.State) string {
 		b.WriteString(line("panel", panelURL(cfg)))
 		b.WriteString(line("kernel", orDash(cfg.CoreVersion)))
 		b.WriteString(line("panelv", orDash(cfg.UIVersion)))
-		b.WriteString(line("subs", fmt.Sprintf("%d", len(cfg.Subscriptions))))
+		b.WriteString(line("subs", subsSummary(cfg)))
 	}
 	// Every line() ends in a newline; keeping the last one would render an empty
 	// row inside the card, pushing the bottom border away from the final field.
@@ -77,52 +81,168 @@ func menuHeader(st svc.State) string {
 
 // subscriptionName returns the display name of the subscription at index i,
 // falling back to a positional name for entries the subscription didn't name.
-func subscriptionName(i int, s config.Subscription) string {
-	if s.Name != "" {
-		return s.Name
+func subscriptionName(i int, s config.Subscription) string { return s.DisplayName(i) }
+
+// activeSubLabel names the subscription currently generating config.yaml, or
+// says why there isn't one.
+func activeSubLabel(cfg *config.Config) string {
+	i := cfg.ActiveIndex()
+	if i >= 0 {
+		return subscriptionName(i, cfg.Subscriptions[i])
 	}
-	return fmt.Sprintf("sub-%d", i)
+	if len(cfg.Subscriptions) == 0 {
+		return "none — no subscriptions yet"
+	}
+	return "none — every subscription is disabled"
 }
 
-// subscriptionMenu builds a dynamic submenu listing all subscriptions.
-func subscriptionMenu() []menuItem {
-	cfg, _ := config.Load(paths.New().Config)
-	if cfg == nil || len(cfg.Subscriptions) == 0 {
+// subsSummary is the status-card line for subscriptions: how many there are and
+// which one is live.
+func subsSummary(cfg *config.Config) string {
+	if len(cfg.Subscriptions) == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d  (active: %s)", len(cfg.Subscriptions), activeSubLabel(cfg))
+}
+
+// subscriptionTags renders the state flags shown after a subscription's name.
+func subscriptionTags(s config.Subscription, active bool) string {
+	var tags []string
+	if active {
+		tags = append(tags, "active")
+	}
+	if !s.Enabled() {
+		tags = append(tags, "disabled")
+	}
+	if !s.AutoUpdate() {
+		tags = append(tags, "no auto-update")
+	}
+	if len(tags) == 0 {
+		return ""
+	}
+	return "  [" + strings.Join(tags, ", ") + "]"
+}
+
+// menuConfig loads the config for building menus, falling back to defaults so a
+// missing or unreadable file still renders a usable menu instead of nothing.
+func menuConfig() *config.Config {
+	cfg, err := config.Load(paths.New().Config)
+	if err != nil || cfg == nil {
+		return config.Default()
+	}
+	return cfg
+}
+
+// subscriptionsMenu builds the Subscriptions submenu. It leads with the active
+// profile, since every other action here is relative to it.
+func subscriptionsMenu(cfg *config.Config) []menuItem {
+	return []menuItem{
+		{label: "Current active:  " + activeSubLabel(cfg), info: true},
+		{label: "Switch active subscription ▸", sub: switchSubscriptionMenu(cfg)},
+		{label: "List subscriptions ▸", sub: subscriptionMenu(cfg)},
+		{label: "Add subscription…", action: "sub-add"},
+		{label: "Update all now", action: "sub update"},
+		{label: "Set global refresh interval…", action: "sub-interval"},
+		{label: "Open config file", action: "sub edit"},
+	}
+}
+
+// switchSubscriptionMenu lets the user pick the profile to run, one row per
+// subscription. The active one and any disabled one are greyed and inert: their
+// row spells out why it can't be chosen instead of failing after the fact.
+func switchSubscriptionMenu(cfg *config.Config) []menuItem {
+	if len(cfg.Subscriptions) == 0 {
 		return []menuItem{
 			{label: "No subscriptions configured", action: "noop", disabled: "use 'Add subscription' to add one"},
 		}
 	}
 
+	active := cfg.ActiveIndex()
 	items := make([]menuItem, 0, len(cfg.Subscriptions))
-	for i, sub := range cfg.Subscriptions {
+	for i, s := range cfg.Subscriptions {
+		it := menuItem{label: subscriptionName(i, s), action: fmt.Sprintf("sub switch %d", i)}
+		switch {
+		case i == active:
+			it.action, it.disabled = "noop", "already active"
+		case !s.Enabled():
+			it.action, it.disabled = "noop", "disabled — enable it in its detail page first"
+		}
+		items = append(items, it)
+	}
+	return items
+}
+
+// subscriptionMenu lists every subscription; each row opens its detail page.
+func subscriptionMenu(cfg *config.Config) []menuItem {
+	if len(cfg.Subscriptions) == 0 {
+		return []menuItem{
+			{label: "No subscriptions configured", action: "noop", disabled: "use 'Add subscription' to add one"},
+		}
+	}
+
+	active := cfg.ActiveIndex()
+	items := make([]menuItem, 0, len(cfg.Subscriptions))
+	for i, s := range cfg.Subscriptions {
 		items = append(items, menuItem{
-			label:  subscriptionName(i, sub),
-			action: fmt.Sprintf("sub show %d", i),
+			label: subscriptionName(i, s) + subscriptionTags(s, i == active) + " ▸",
+			sub:   subscriptionDetailMenu(cfg, i),
 		})
 	}
 	return items
 }
 
-// removeSubscriptionMenu builds the submenu for deleting a subscription: one row
-// per entry, each carrying its index in the action so the user picks the victim
-// with the arrow keys instead of typing a number. Choosing a row only opens the
-// confirmation — the delete itself happens in removeSubscriptionAt.
-func removeSubscriptionMenu() []menuItem {
-	cfg, _ := config.Load(paths.New().Config)
-	if cfg == nil || len(cfg.Subscriptions) == 0 {
-		return []menuItem{
-			{label: "No subscriptions configured", action: "noop", disabled: "nothing to remove"},
-		}
+// subscriptionDetailMenu is one subscription's own page: its state on top, then
+// everything that can be done to it. The enable/disable and scheduled-update
+// rows are toggles, so each is labelled with the action it performs rather than
+// the state it is in.
+func subscriptionDetailMenu(cfg *config.Config, i int) []menuItem {
+	s := cfg.Subscriptions[i]
+	active := cfg.ActiveIndex() == i
+
+	items := []menuItem{
+		{label: "url:       " + s.URL, info: true},
+		{label: "state:     " + detailState(s, active), info: true},
+		{label: "schedule:  " + scheduleSummary(cfg, s), info: true},
+		{label: "updated:   " + lastUpdated(s), info: true},
 	}
 
-	items := make([]menuItem, 0, len(cfg.Subscriptions))
-	for i, sub := range cfg.Subscriptions {
-		items = append(items, menuItem{
-			label:  subscriptionName(i, sub),
-			action: fmt.Sprintf("sub-remove %d", i),
-		})
+	setActive := menuItem{label: "Set as active", action: fmt.Sprintf("sub switch %d", i)}
+	switch {
+	case active:
+		setActive.action, setActive.disabled = "noop", "already active"
+	case !s.Enabled():
+		setActive.action, setActive.disabled = "noop", "enable it first"
 	}
-	return items
+	items = append(items, setActive, menuItem{label: "Update now", action: fmt.Sprintf("sub update %d", i)})
+
+	if s.Enabled() {
+		items = append(items, menuItem{label: "Disable this subscription", action: fmt.Sprintf("sub disable %d", i)})
+	} else {
+		items = append(items, menuItem{label: "Enable this subscription", action: fmt.Sprintf("sub enable %d", i)})
+	}
+
+	if s.AutoUpdate() {
+		items = append(items, menuItem{label: "Turn scheduled update off", action: fmt.Sprintf("sub auto %d off", i)})
+	} else {
+		items = append(items, menuItem{label: "Turn scheduled update on", action: fmt.Sprintf("sub auto %d on", i)})
+	}
+
+	return append(items,
+		menuItem{label: "Change update interval…", action: fmt.Sprintf("sub-interval-at %d", i)},
+		menuItem{label: "Delete this subscription", action: fmt.Sprintf("sub-remove %d", i)},
+	)
+}
+
+// detailState summarises enabled/active on the detail page's state line.
+func detailState(s config.Subscription, active bool) string {
+	state := "enabled"
+	if !s.Enabled() {
+		state = "disabled"
+	}
+	if active {
+		state += ", active"
+	}
+	return state
 }
 
 // rootMenu builds the top-level management menu, ordered and annotated for the
@@ -141,14 +261,7 @@ func rootMenu(st svc.State) []menuItem {
 		{label: "Self (--self)", action: "update --self"},
 		{label: "Everything (--all)", action: "update --all"},
 	}}
-	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
-		{label: "List subscriptions ▸", sub: subscriptionMenu()},
-		{label: "Add subscription…", action: "sub-add"},
-		{label: "Remove subscription ▸", sub: removeSubscriptionMenu()},
-		{label: "Update & reload", action: "sub update"},
-		{label: "Set refresh interval…", action: "sub-interval"},
-		{label: "Open config file", action: "sub edit"},
-	}}
+	subs := menuItem{label: "Subscriptions ▸", sub: subscriptionsMenu(menuConfig())}
 	sysProxy := menuItem{label: "System proxy ▸", sub: []menuItem{
 		{label: "Enable system proxy", action: "system-proxy enable"},
 		{label: "Disable system proxy", action: "system-proxy disable"},
@@ -199,12 +312,40 @@ type menuModel struct {
 }
 
 func newMenuModel(st svc.State, header string) menuModel {
+	root := rootMenu(st)
 	return menuModel{
 		header:  header,
-		stack:   [][]menuItem{rootMenu(st)},
+		stack:   [][]menuItem{root},
 		titles:  []string{"zashhomo"},
-		cursors: []int{0},
+		cursors: []int{firstSelectable(root)},
 	}
+}
+
+// firstSelectable returns the index the cursor should start on: info rows are
+// labels rather than choices, so it skips them.
+func firstSelectable(items []menuItem) int {
+	for i, it := range items {
+		if !it.info {
+			return i
+		}
+	}
+	return 0
+}
+
+// moveCursor steps from by delta, wrapping around the list and passing over info
+// rows. It returns from unchanged when there is nothing selectable to land on.
+func moveCursor(items []menuItem, from, delta int) int {
+	n := len(items)
+	if n == 0 {
+		return from
+	}
+	for step := 1; step <= n; step++ {
+		i := ((from+delta*step)%n + n) % n
+		if !items[i].info {
+			return i
+		}
+	}
+	return from
 }
 
 func (m menuModel) current() []menuItem { return m.stack[len(m.stack)-1] }
@@ -224,17 +365,9 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.choice = menuItem{action: "exit"}
 		return m, tea.Quit
 	case "up", "k":
-		if *cur > 0 {
-			*cur--
-		} else {
-			*cur = len(items) - 1
-		}
+		*cur = moveCursor(items, *cur, -1)
 	case "down", "j":
-		if *cur < len(items)-1 {
-			*cur++
-		} else {
-			*cur = 0
-		}
+		*cur = moveCursor(items, *cur, 1)
 	case "esc", "backspace", "left", "h":
 		if len(m.stack) > 1 {
 			m.stack = m.stack[:len(m.stack)-1]
@@ -246,10 +379,15 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", "right", "l":
 		it := items[*cur]
+		if it.info {
+			// The cursor never rests on an info row, but a list of nothing but
+			// info rows would leave it there; don't act on a label.
+			return m, nil
+		}
 		if len(it.sub) > 0 {
 			m.stack = append(m.stack, it.sub)
 			m.titles = append(m.titles, strings.TrimSuffix(it.label, " ▸"))
-			m.cursors = append(m.cursors, 0)
+			m.cursors = append(m.cursors, firstSelectable(it.sub))
 		} else {
 			m.choice = it
 			return m, tea.Quit
@@ -281,6 +419,14 @@ func (m menuModel) View() string {
 	// Menu items list
 	cur := *m.cursor()
 	for i, it := range m.current() {
+		// Info rows state the context the menu acts on; render them as hints so
+		// they read as part of the heading rather than as choices.
+		if it.info {
+			b.WriteString(theme.Hint.Render("  " + it.label))
+			b.WriteByte('\n')
+			continue
+		}
+
 		label := it.label
 		if it.disabled != "" {
 			label += "  (" + it.disabled + ")"

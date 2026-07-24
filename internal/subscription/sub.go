@@ -1,18 +1,23 @@
-// Package subscription turns configured clash subscriptions into a mihomo
+// Package subscription turns the active clash subscription into a mihomo
 // config.yaml and triggers hot reloads via the API.
 //
-// zashhomo fetches the first subscription's full clash document itself and uses
-// it as the base config, preserving the author's proxy-groups and rules (so the
-// panel shows the same rich routing other mihomo GUIs do). Only the control
-// fields zashhomo owns (mixed-port, external-controller, secret, allow-lan) are
-// overridden. Additional subscriptions contribute their proxies to the node
-// pool. A node-only subscription (no groups/rules) falls back to a synthesized
-// PROXY/AUTO setup so the kernel still routes.
+// Subscriptions are profiles: every one is downloaded to its own cache file
+// under <data>/subs, but only the active one generates config.yaml. Its full
+// clash document is used as the base, preserving the author's proxy-groups and
+// rules (so the panel shows the same rich routing other mihomo GUIs do); only
+// the control fields zashhomo owns (mixed-port, external-controller, secret,
+// allow-lan) are overridden. A node-only subscription (no groups/rules) falls
+// back to a synthesized PROXY/AUTO setup so the kernel still routes.
+//
+// Because every profile is cached, switching between them is a local operation:
+// no network, and it works while the provider is unreachable.
 package subscription
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,45 +43,33 @@ const subUserAgent = "clash.meta/zashhomo"
 // httpClient is the client used to fetch subscriptions (overridable in tests).
 var httpClient = &http.Client{Timeout: fetchTimeout}
 
-// GenerateConfig writes config.yaml derived from cfg's subscriptions. With no
-// subscriptions it writes a valid direct-only config so the kernel can start
-// and the panel can connect. With subscriptions it fetches the first one and
-// preserves its full routing (see package doc). If fetching fails it keeps a
-// previously written config rather than clobbering a working setup.
+// GenerateConfig writes config.yaml from the active subscription's cached
+// document, preserving its full routing (see package doc). With no active
+// subscription — none configured, or all of them disabled — it writes a valid
+// direct-only config so the kernel can still start and the panel can connect.
+//
+// It prefers the cache and only reaches for the network when the active
+// subscription has never been fetched, which is what makes switching profiles
+// instant. If that fetch fails it keeps a previously written config rather than
+// clobbering a working setup.
 func GenerateConfig(p *paths.Paths, cfg *config.Config) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
 	}
 
-	if len(cfg.Subscriptions) == 0 {
+	idx := cfg.ActiveIndex()
+	if idx < 0 {
 		return writeYAML(p.MihomoConfig(), minimalDirectConfig(cfg))
 	}
+	sub := &cfg.Subscriptions[idx]
 
-	// Fetch the first subscription as the base config (full passthrough).
-	base, err := fetchClashConfig(cfg.Subscriptions[0].URL)
+	base, err := loadCached(p, *sub)
 	if err != nil {
-		// Don't clobber a working config; only write a fallback if none exists.
-		if _, statErr := os.Stat(p.MihomoConfig()); statErr == nil {
-			return fmt.Errorf("fetch subscription %q: %w (kept existing config)", cfg.Subscriptions[0].Name, err)
-		}
-		if writeErr := writeYAML(p.MihomoConfig(), minimalDirectConfig(cfg)); writeErr != nil {
-			return writeErr
-		}
-		return fmt.Errorf("fetch subscription %q: %w (wrote direct-only fallback)", cfg.Subscriptions[0].Name, err)
-	}
-
-	// Merge additional subscriptions' proxies into the node pool.
-	var extraNames []string
-	for _, s := range cfg.Subscriptions[1:] {
-		extra, err := fetchClashConfig(s.URL)
+		// Never fetched (fresh install, or added while offline): go get it.
+		base, err = Fetch(p, sub)
 		if err != nil {
-			// Skip an unreachable extra subscription; the primary still works.
-			continue
+			return fallbackConfig(p, cfg, sub.DisplayName(idx), err)
 		}
-		extraNames = append(extraNames, mergeProxies(base, extra)...)
-	}
-	if len(extraNames) > 0 {
-		appendToSelectGroups(base, extraNames)
 	}
 
 	ensureRoutable(base, cfg)
@@ -85,27 +78,157 @@ func GenerateConfig(p *paths.Paths, cfg *config.Config) error {
 	return writeYAML(p.MihomoConfig(), base)
 }
 
-// fetchClashConfig downloads url and parses it as a clash YAML document.
-func fetchClashConfig(url string) (map[string]any, error) {
+// fallbackConfig answers a failed fetch. An existing config.yaml is a working
+// setup and must not be clobbered; with none on disk the kernel needs something
+// to start from, so a direct-only config is written. Either way the cause is
+// reported, since the user asked for a subscription and did not get it.
+func fallbackConfig(p *paths.Paths, cfg *config.Config, name string, cause error) error {
+	if _, err := os.Stat(p.MihomoConfig()); err == nil {
+		return fmt.Errorf("subscription %q: %w (kept existing config)", name, cause)
+	}
+	if err := writeYAML(p.MihomoConfig(), minimalDirectConfig(cfg)); err != nil {
+		return err
+	}
+	return fmt.Errorf("subscription %q: %w (wrote direct-only fallback)", name, cause)
+}
+
+// Fetch downloads sub's document into the local cache and stamps UpdatedAt on
+// success, returning the parsed document. The caller owns persisting cfg.
+func Fetch(p *paths.Paths, sub *config.Subscription) (map[string]any, error) {
+	doc, raw, err := fetchClashConfig(sub.URL)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(p.SubsDir(), 0o755); err != nil {
+		return nil, err
+	}
+	// The raw bytes are cached rather than a re-marshalled document, so a later
+	// switch replays exactly what the provider served.
+	if err := os.WriteFile(p.SubFile(cacheName(*sub)), raw, 0o600); err != nil {
+		return nil, err
+	}
+	sub.UpdatedAt = time.Now()
+	return doc, nil
+}
+
+// Refresh re-downloads the subscription at index into the cache. Regenerating
+// config.yaml and saving cfg (Fetch stamps UpdatedAt) are left to the caller,
+// which knows whether the refreshed subscription is the active one.
+func Refresh(p *paths.Paths, cfg *config.Config, index int) error {
+	if index < 0 || index >= len(cfg.Subscriptions) {
+		return fmt.Errorf("subscription index %d out of range (0-%d)", index, len(cfg.Subscriptions)-1)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		return err
+	}
+	_, err := Fetch(p, &cfg.Subscriptions[index])
+	return err
+}
+
+// RefreshAll re-downloads every enabled subscription. It tries all of them and
+// reports the first failure, so one dead provider doesn't stop the rest.
+func RefreshAll(p *paths.Paths, cfg *config.Config) error {
+	var firstErr error
+	for i := range cfg.Subscriptions {
+		if !cfg.Subscriptions[i].Enabled() {
+			continue
+		}
+		if err := Refresh(p, cfg, i); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("subscription %q: %w", cfg.Subscriptions[i].DisplayName(i), err)
+		}
+	}
+	return firstErr
+}
+
+// Due returns the indices of the subscriptions whose timed refresh has come due
+// at now: enabled, opted into auto-update, and last fetched longer ago than
+// their own interval (or the global one when they don't set one). A subscription
+// that has never been fetched is always due.
+func Due(cfg *config.Config, now time.Time) []int {
+	global := cfg.RefreshInterval()
+	var due []int
+	for i, s := range cfg.Subscriptions {
+		if !s.Enabled() || !s.AutoUpdate() {
+			continue
+		}
+		if now.Sub(s.UpdatedAt) >= s.RefreshIntervalOr(global) {
+			due = append(due, i)
+		}
+	}
+	return due
+}
+
+// DropCache deletes sub's cached document. It is called when a subscription is
+// removed so the cache doesn't accumulate files no config refers to. A missing
+// file is not an error.
+func DropCache(p *paths.Paths, sub config.Subscription) error {
+	if err := os.Remove(p.SubFile(cacheName(sub))); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// Cached reports whether sub has a document on disk, i.e. whether switching to
+// it would need the network.
+func Cached(p *paths.Paths, sub config.Subscription) bool {
+	_, err := os.Stat(p.SubFile(cacheName(sub)))
+	return err == nil
+}
+
+// cacheName is the file stem holding sub's fetched document. It prefers the
+// stable ID; a subscription that predates IDs (or one built in code) falls back
+// to a hash of its URL, which is stable across runs just the same.
+func cacheName(sub config.Subscription) string {
+	if sub.ID != "" {
+		return sub.ID
+	}
+	sum := sha256.Sum256([]byte(sub.URL))
+	return hex.EncodeToString(sum[:8])
+}
+
+// loadCached parses sub's cached document. A missing or unusable cache is an
+// error, which callers answer by fetching.
+func loadCached(p *paths.Paths, sub config.Subscription) (map[string]any, error) {
+	data, err := os.ReadFile(p.SubFile(cacheName(sub)))
+	if err != nil {
+		return nil, err
+	}
+	return parseClashConfig(data)
+}
+
+// fetchClashConfig downloads url, returning the parsed document alongside the
+// bytes as served so they can be cached verbatim.
+func fetchClashConfig(url string) (map[string]any, []byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("User-Agent", subUserAgent)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %s", resp.Status)
+		return nil, nil, fmt.Errorf("status %s", resp.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	doc, err := parseClashConfig(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return doc, data, nil
+}
+
+// parseClashConfig parses data as a clash YAML document, rejecting anything that
+// couldn't drive the kernel (many providers answer an expired token with an HTML
+// or plain-text error page, which would otherwise be cached as a valid profile).
+func parseClashConfig(data []byte) (map[string]any, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
@@ -117,48 +240,6 @@ func fetchClashConfig(url string) (map[string]any, error) {
 		return nil, fmt.Errorf("no proxies in subscription")
 	}
 	return doc, nil
-}
-
-// mergeProxies appends src's proxies to dst and returns the names added.
-func mergeProxies(dst, src map[string]any) []string {
-	srcList, ok := src["proxies"].([]any)
-	if !ok {
-		return nil
-	}
-	dstList, _ := dst["proxies"].([]any)
-	var names []string
-	for _, item := range srcList {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if name, ok := m["name"].(string); ok {
-			names = append(names, name)
-		}
-		dstList = append(dstList, item)
-	}
-	dst["proxies"] = dstList
-	return names
-}
-
-// appendToSelectGroups makes extra proxies selectable by adding their names to
-// every select-type proxy-group in the base config.
-func appendToSelectGroups(base map[string]any, names []string) {
-	groups, ok := base["proxy-groups"].([]any)
-	if !ok {
-		return
-	}
-	for _, g := range groups {
-		gm, ok := g.(map[string]any)
-		if !ok || gm["type"] != "select" {
-			continue
-		}
-		proxies, _ := gm["proxies"].([]any)
-		for _, n := range names {
-			proxies = append(proxies, n)
-		}
-		gm["proxies"] = proxies
-	}
 }
 
 // ensureRoutable synthesizes a PROXY/AUTO setup for a node-only subscription so

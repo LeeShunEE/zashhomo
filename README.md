@@ -50,11 +50,20 @@ zashhomo dashboard            用默认浏览器打开 zashboard 面板（自动
 zashhomo onboard              新手引导：装服务 → 加订阅 → 重启 → 开系统代理 → 开面板
 zashhomo system-proxy enable|disable   开启/关闭系统代理（指向 mixed-port）
 zashhomo update [--core|--ui|--self|--all]   更新组件
-zashhomo sub add <url>        添加订阅
-zashhomo sub list             查看订阅（元信息 + 编辑提示）
-zashhomo sub edit             用编辑器打开配置文件
+zashhomo sub add <url> [name] 添加订阅并下载到本地缓存
+zashhomo sub list             列出订阅及其状态（▸ 标记当前生效的那条）
+zashhomo sub show <index>     查看单条订阅的完整信息
+zashhomo sub switch <index>   把该订阅切换为生效配置（直接读缓存，无需联网）
+zashhomo sub update [index]   刷新指定订阅；省略 index 则刷新全部已启用的
+zashhomo sub enable|disable <index>
+                              启用/停用某条订阅（停用后不再参与定时更新）
+zashhomo sub auto <index> on|off
+                              开关该订阅的定时更新
 zashhomo sub interval [dur]   查看/设置全局刷新间隔（如 6h、30m）
-zashhomo sub update           重新生成配置并热重载内核
+zashhomo sub interval <index> <dur>
+                              为单条订阅设置独立间隔（default 表示跟随全局）
+zashhomo sub remove <index>   删除指定订阅（index 见 sub list）
+zashhomo sub edit             用编辑器打开配置文件
 zashhomo uninstall [--purge]  停服务并移除（--purge 连同数据/配置一起删）
 zashhomo version              打印版本
 ```
@@ -70,8 +79,22 @@ zashhomo version              打印版本
 zashhomo sub add https://example.com/your-subscription
 ```
 
-订阅会以 `proxy-providers` 形式写入 mihomo 配置，生成 `PROXY`（select）与
-`AUTO`（url-test）两个策略组；随后自动热重载，面板即可见节点。
+订阅采用 **profile 模型**：每条订阅的原始内容下载后存放在 `<数据目录>/subs/<id>.yaml`，
+但同一时刻只有**一条**订阅生效——`config.yaml` 完全由这条生效订阅生成（它自己的节点、
+策略组和规则），其余订阅在缓存中待命。
+
+```sh
+zashhomo sub list             # 看有哪些订阅，▸ 就是当前生效的
+zashhomo sub switch 1         # 切到第 1 条（读本地缓存，断网也能切）
+zashhomo sub auto 1 off       # 只关掉这条的定时更新
+zashhomo sub interval 1 30m   # 只给这条设 30 分钟的刷新间隔
+```
+
+停用（`disable`）一条订阅表示它既不能被切换过去、也不参与定时更新；若停用的正好是当前
+生效的那条，会自动切换到下一条已启用的订阅。切换和刷新都会自动热重载内核，面板随即生效。
+
+交互式菜单（`zashhomo -i`）的 Subscriptions 页顶部会显示 `Current active:`，并提供
+「切换生效订阅」和「逐条管理」两个入口，可用方向键选择。
 
 ## 目录布局
 
@@ -81,8 +104,9 @@ zashhomo sub add https://example.com/your-subscription
 | Linux/macOS（root） | `/var/lib/zashhomo`                        | `/etc/zashhomo/zashhomo.yaml`     |
 | Windows         | `%ProgramData%\zashhomo`                   | 同数据目录                        |
 
-数据目录内含：`bin/`（mihomo 二进制）、`ui/`（zashboard 静态站）、`providers/`（订阅缓存）、
-`config.yaml`（生成的 mihomo 配置）、`zashhomo.log`。
+数据目录内含：`bin/`（mihomo 二进制）、`ui/`（zashboard 静态站）、`subs/`（各订阅的原始
+文件，按 id 命名）、`providers/`（mihomo 自身的 provider 缓存）、`config.yaml`（由生效订阅
+生成的 mihomo 配置）、`zashhomo.log`。
 
 可用环境变量覆盖：`ZASHHOMO_DATA`、`ZASHHOMO_CONFIG_DIR`。
 
@@ -93,8 +117,16 @@ controller_addr: 127.0.0.1:9090   # mihomo external-controller（仅回环）
 secret: <自动生成>                 # 同时保护 Clash API 与面板访问
 web_addr: 127.0.0.1:9191          # 面板 + API 反代监听地址（默认仅回环）
 mixed_port: 9190                  # mihomo 混合代理端口（可用 --mixed-port 改）
-sub_interval: 12h                 # 订阅刷新间隔
-subscriptions: []                 # 订阅列表
+sub_interval: 12h                 # 全局订阅刷新间隔
+active_sub: a1b2c3d4e5f60718      # 当前生效订阅的 id（由 sub switch 维护）
+subscriptions:                    # 订阅列表
+  - id: a1b2c3d4e5f60718          #   稳定 id，缓存文件名同名（自动生成）
+    name: 机场A                    #   显示名
+    url: https://example.com/sub  #   订阅地址
+    disabled: false               #   true 表示停用：不参与切换与定时更新
+    no_auto_update: false         #   true 表示关掉这条的定时更新
+    interval: 30m                 #   该订阅独立的刷新间隔（留空则跟随 sub_interval）
+    updated_at: 2026-07-24T10:00:00Z  # 上次成功刷新时间（自动记录）
 core_version: ""                  # 已装内核版本（自动记录）
 ui_version: ""                    # 已装面板版本（自动记录）
 ```

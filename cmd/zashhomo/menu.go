@@ -25,18 +25,27 @@ func init() {
 
 // menuItem is one selectable row. action is the command line (minus the
 // "zashhomo" prefix) run when the item is chosen; when sub is non-empty the
-// item opens a submenu instead and action is ignored. A non-empty disabled
-// reason means the action doesn't apply in the current state: the row is greyed
-// but still selectable, and choosing it prompts for confirmation before forcing
-// — unless its action is the "noop" sentinel, which makes the row inert and the
-// reason purely informational. An info row is not a choice at all: it displays
-// state at the top of a menu and the cursor skips over it.
+// item opens a submenu instead and action is ignored.
+//
+// A non-empty disabled reason means the action is discouraged in the current
+// state: the row is greyed but still selectable, and choosing it asks for
+// confirmation before going ahead. Grey therefore never means inert — every
+// greyed row carries an action that really runs, and a state the menu cannot act
+// on at all is rendered as an info row or simply left out.
+//
+// An info row is not a choice: it states the context the menu acts on, is
+// skipped by the cursor, and renders as a dim label followed by an unstyled
+// value, matching the status card above.
 type menuItem struct {
 	label    string
+	value    string // info rows only: the part worth reading, left unstyled
 	action   string
 	sub      []menuItem
 	disabled string
-	info     bool
+	// confirmYes overrides the wording of the confirming option shown for a
+	// greyed row; it defaults to "Run it anyway".
+	confirmYes string
+	info       bool
 }
 
 // menuHeader renders the big banner plus a compact status block for st. It is
@@ -134,38 +143,47 @@ func menuConfig() *config.Config {
 }
 
 // subscriptionsMenu builds the Subscriptions submenu. It leads with the active
-// profile, since every other action here is relative to it.
+// profile, since every other action here is relative to it. With nothing
+// configured yet the two browsing entries are left out rather than shown as
+// empty lists — the info row already says there is nothing there.
 func subscriptionsMenu(cfg *config.Config) []menuItem {
-	return []menuItem{
-		{label: "Current active:  " + activeSubLabel(cfg), info: true},
-		{label: "Switch active subscription ▸", sub: switchSubscriptionMenu(cfg)},
-		{label: "List subscriptions ▸", sub: subscriptionMenu(cfg)},
-		{label: "Add subscription…", action: "sub-add"},
-		{label: "Update all now", action: "sub update"},
-		{label: "Set global refresh interval…", action: "sub-interval"},
-		{label: "Open config file", action: "sub edit"},
+	items := []menuItem{{label: "Current active", value: activeSubLabel(cfg), info: true}}
+	if len(cfg.Subscriptions) > 0 {
+		items = append(items,
+			menuItem{label: "Switch active subscription ▸", sub: switchSubscriptionMenu(cfg)},
+			menuItem{label: "List subscriptions ▸", sub: subscriptionMenu(cfg)},
+		)
 	}
+
+	updateAll := menuItem{label: "Update all now", action: "sub update"}
+	if len(cfg.Subscriptions) == 0 {
+		updateAll.disabled = "no subscriptions yet"
+	}
+	return append(items,
+		menuItem{label: "Add subscription…", action: "sub-add"},
+		updateAll,
+		menuItem{label: "Set global refresh interval…", action: "sub-interval"},
+		menuItem{label: "Open config file", action: "sub edit"},
+	)
 }
 
 // switchSubscriptionMenu lets the user pick the profile to run, one row per
-// subscription. The active one and any disabled one are greyed and inert: their
-// row spells out why it can't be chosen instead of failing after the fact.
+// subscription. The active one is left out — switching to what is already
+// running is not an action. A disabled one stays, greyed: switching to it is a
+// real thing to want, it just has to be enabled first, which the confirmation
+// offers to do.
 func switchSubscriptionMenu(cfg *config.Config) []menuItem {
-	if len(cfg.Subscriptions) == 0 {
-		return []menuItem{
-			{label: "No subscriptions configured", action: "noop", disabled: "use 'Add subscription' to add one"},
-		}
-	}
-
 	active := cfg.ActiveIndex()
 	items := make([]menuItem, 0, len(cfg.Subscriptions))
 	for i, s := range cfg.Subscriptions {
+		if i == active {
+			continue
+		}
 		it := menuItem{label: subscriptionName(i, s), action: fmt.Sprintf("sub switch %d", i)}
-		switch {
-		case i == active:
-			it.action, it.disabled = "noop", "already active"
-		case !s.Enabled():
-			it.action, it.disabled = "noop", "disabled — enable it in its detail page first"
+		if !s.Enabled() {
+			it.action = fmt.Sprintf("sub-enable-switch %d", i)
+			it.disabled = "disabled — switching will enable it first"
+			it.confirmYes = "Enable it and switch"
 		}
 		items = append(items, it)
 	}
@@ -174,12 +192,6 @@ func switchSubscriptionMenu(cfg *config.Config) []menuItem {
 
 // subscriptionMenu lists every subscription; each row opens its detail page.
 func subscriptionMenu(cfg *config.Config) []menuItem {
-	if len(cfg.Subscriptions) == 0 {
-		return []menuItem{
-			{label: "No subscriptions configured", action: "noop", disabled: "use 'Add subscription' to add one"},
-		}
-	}
-
 	active := cfg.ActiveIndex()
 	items := make([]menuItem, 0, len(cfg.Subscriptions))
 	for i, s := range cfg.Subscriptions {
@@ -200,20 +212,19 @@ func subscriptionDetailMenu(cfg *config.Config, i int) []menuItem {
 	active := cfg.ActiveIndex() == i
 
 	items := []menuItem{
-		{label: "url:       " + s.URL, info: true},
-		{label: "state:     " + detailState(s, active), info: true},
-		{label: "schedule:  " + scheduleSummary(cfg, s), info: true},
-		{label: "updated:   " + lastUpdated(s), info: true},
+		{label: "url", value: s.URL, info: true},
+		{label: "state", value: detailState(s, active), info: true},
+		{label: "schedule", value: scheduleSummary(cfg, s), info: true},
+		{label: "updated", value: lastUpdated(s), info: true},
 	}
 
-	setActive := menuItem{label: "Set as active", action: fmt.Sprintf("sub switch %d", i)}
-	switch {
-	case active:
-		setActive.action, setActive.disabled = "noop", "already active"
-	case !s.Enabled():
-		setActive.action, setActive.disabled = "noop", "enable it first"
+	// "Set as active" only earns a row when it would do something. Already active
+	// is stated by the state line above, and a disabled subscription has "Enable
+	// this subscription" right below — that is the step to take first.
+	if !active && s.Enabled() {
+		items = append(items, menuItem{label: "Set as active", action: fmt.Sprintf("sub switch %d", i)})
 	}
-	items = append(items, setActive, menuItem{label: "Update now", action: fmt.Sprintf("sub update %d", i)})
+	items = append(items, menuItem{label: "Update now", action: fmt.Sprintf("sub update %d", i)})
 
 	if s.Enabled() {
 		items = append(items, menuItem{label: "Disable this subscription", action: fmt.Sprintf("sub disable %d", i)})
@@ -416,13 +427,17 @@ func (m menuModel) View() string {
 		b.WriteByte('\n')
 	}
 
-	// Menu items list
+	// Menu items list. Every row — info, plain, greyed — is indented by its
+	// two-character prefix and nothing else, so the styles must not carry padding
+	// of their own or the columns drift apart.
 	cur := *m.cursor()
+	keyWidth := infoKeyWidth(m.current())
 	for i, it := range m.current() {
-		// Info rows state the context the menu acts on; render them as hints so
-		// they read as part of the heading rather than as choices.
+		// Info rows state the context the menu acts on. The label is dim and the
+		// value is left unstyled, the same split the status card above uses, so
+		// the part worth reading is the bright one.
 		if it.info {
-			b.WriteString(theme.Hint.Render("  " + it.label))
+			b.WriteString("  " + theme.InfoKey.Render(fmt.Sprintf("%-*s", keyWidth, it.label)) + it.value)
 			b.WriteByte('\n')
 			continue
 		}
@@ -432,17 +447,17 @@ func (m menuModel) View() string {
 			label += "  (" + it.disabled + ")"
 		}
 
-		// Selection indicator
 		prefix := "  "
 		if i == cur {
 			prefix = "❯ "
 		}
 
-		// Apply styles
+		// Colour carries one meaning at a time: highlighted for the cursor, dim for
+		// discouraged, plain otherwise. A greyed row under the cursor is drawn like
+		// any other selection — the warning is the confirmation it opens, which
+		// states the reason in full and defaults to Cancel.
 		var rendered string
 		switch {
-		case i == cur && it.disabled != "":
-			rendered = theme.Disabled.Faint(true).Render(prefix + label)
 		case i == cur:
 			rendered = theme.Selected.Render(prefix + label)
 		case it.disabled != "":
@@ -454,12 +469,27 @@ func (m menuModel) View() string {
 		b.WriteByte('\n')
 	}
 
-	// Bottom hint area
+	// Bottom hint area, aligned to the same column as the rows above it.
 	b.WriteByte('\n')
-	b.WriteString(theme.Hint.Render("↑/↓ move · enter select · esc back · q quit"))
+	b.WriteString("  " + theme.Hint.Render("↑/↓ move · enter select · esc back · q quit"))
 	b.WriteByte('\n')
 
 	return b.String()
+}
+
+// infoKeyWidth is the column width that lines up the values of a menu's info
+// rows. Two spaces of gutter keep the key and value from touching.
+func infoKeyWidth(items []menuItem) int {
+	width := 0
+	for _, it := range items {
+		if it.info && len(it.label) > width {
+			width = len(it.label)
+		}
+	}
+	if width == 0 {
+		return 0
+	}
+	return width + 2
 }
 
 // confirmModel is a two-option prompt. For a destructive action (danger set) it
@@ -542,7 +572,7 @@ func (m confirmModel) View() string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(theme.Hint.Render("↑/↓ move · enter confirm · esc cancel"))
+	b.WriteString("  " + theme.Hint.Render("↑/↓ move · enter confirm · esc cancel"))
 	b.WriteByte('\n')
 	return b.String()
 }

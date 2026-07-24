@@ -1,10 +1,12 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/svc"
@@ -137,34 +139,57 @@ func TestSubscriptionsMenuLeadsWithActive(t *testing.T) {
 	if !first.info {
 		t.Errorf("first row %q is selectable; the active line must be an info row", first.label)
 	}
-	if !strings.Contains(first.label, "Current active:") || !strings.Contains(first.label, "alpha") {
-		t.Errorf("first row = %q, want the active subscription named", first.label)
+	if first.label != "Current active" || !strings.Contains(first.value, "alpha") {
+		t.Errorf("first row = %q / %q, want the active subscription named", first.label, first.value)
 	}
 }
 
-// Switching is an arrow-key pick. The active row and any disabled row are inert:
-// they carry the "noop" sentinel and say why they can't be chosen, rather than
-// dispatching a command that would fail.
-func TestSwitchSubscriptionMenuGreysUnavailableRows(t *testing.T) {
+// With no subscriptions there is nothing to switch between and nothing to list,
+// so neither submenu is offered; only "Update all now" stays, greyed, because
+// running it is what tells the user there is nothing to update.
+func TestSubscriptionsMenuHidesEmptySubmenus(t *testing.T) {
+	items := subscriptionsMenu(&config.Config{})
+	for _, it := range items {
+		if len(it.sub) > 0 {
+			t.Errorf("row %q opens a submenu that would be empty", it.label)
+		}
+	}
+	it, ok := findItem(items, "Update all now")
+	if !ok {
+		t.Fatal("no 'Update all now' row")
+	}
+	if it.disabled == "" {
+		t.Error("'Update all now' should be greyed with no subscriptions")
+	}
+	if it.action != "sub update" {
+		t.Errorf("greyed row action = %q, want a command that really runs", it.action)
+	}
+}
+
+// Switching is an arrow-key pick over the profiles you can switch *to*: the
+// active one is left out entirely, and a disabled one stays as a greyed row
+// whose action enables it first.
+func TestSwitchSubscriptionMenuOffersOnlyOtherProfiles(t *testing.T) {
 	items := switchSubscriptionMenu(testConfig())
-	if len(items) != 3 {
-		t.Fatalf("got %d rows, want one per subscription", len(items))
+	if len(items) != 2 {
+		t.Fatalf("got %d rows, want one per non-active subscription", len(items))
 	}
 
-	if items[0].action != "noop" {
-		t.Errorf("active row action = %q, want the inert sentinel", items[0].action)
+	if items[0].label != "beta" || items[0].action != "sub switch 1" {
+		t.Errorf("first row = %+v, want beta switching to index 1", items[0])
 	}
-	if !strings.Contains(items[0].disabled, "already active") {
-		t.Errorf("active row reason = %q, want 'already active'", items[0].disabled)
+	if items[0].disabled != "" {
+		t.Errorf("an enabled, inactive subscription must be plain, got reason %q", items[0].disabled)
 	}
-	if items[1].action != "sub switch 1" {
-		t.Errorf("switchable row action = %q, want %q", items[1].action, "sub switch 1")
+
+	if items[1].label != "gamma" || items[1].action != "sub-enable-switch 2" {
+		t.Errorf("disabled row = %+v, want gamma enabling then switching", items[1])
 	}
-	if items[1].disabled != "" {
-		t.Errorf("an enabled, inactive subscription must be selectable, got reason %q", items[1].disabled)
+	if items[1].disabled == "" {
+		t.Error("a disabled subscription must be greyed")
 	}
-	if items[2].action != "noop" || items[2].disabled == "" {
-		t.Errorf("disabled row = %+v, want an inert, greyed row", items[2])
+	if items[1].confirmYes == "" {
+		t.Error("the greyed row needs its own confirm wording, since it does two things")
 	}
 }
 
@@ -172,11 +197,10 @@ func TestSwitchSubscriptionMenuGreysUnavailableRows(t *testing.T) {
 func TestSubscriptionDetailMenuActions(t *testing.T) {
 	cfg := testConfig()
 
-	// The active subscription cannot be re-activated, and its auto-update is on,
-	// so the toggle offers to turn it off.
+	// The active subscription is already active, so the row that would activate it
+	// isn't rendered at all; its auto-update is on, so the toggle turns it off.
 	active := subscriptionDetailMenu(cfg, 0)
 	wantActive := map[string]string{
-		"Set as active":             "noop",
 		"Update now":                "sub update 0",
 		"Disable this subscription": "sub disable 0",
 		"Turn scheduled update off": "sub auto 0 off",
@@ -184,17 +208,25 @@ func TestSubscriptionDetailMenuActions(t *testing.T) {
 		"Delete this subscription":  "sub-remove 0",
 	}
 	assertActions(t, "active detail", active, wantActive)
+	if _, ok := findItem(active, "Set as active"); ok {
+		t.Error("the active subscription must not offer 'Set as active'")
+	}
 
-	// A disabled subscription offers to be enabled and cannot be activated.
+	// A disabled subscription offers to be enabled; activating it is not a step
+	// that can be taken yet, so that row is absent too.
 	disabled := subscriptionDetailMenu(cfg, 2)
 	assertActions(t, "disabled detail", disabled, map[string]string{
-		"Set as active":             "noop",
 		"Enable this subscription":  "sub enable 2",
 		"Turn scheduled update off": "sub auto 2 off",
 	})
-	if it, _ := findItem(disabled, "Set as active"); it.disabled == "" {
-		t.Error("'Set as active' must be greyed for a disabled subscription")
+	if _, ok := findItem(disabled, "Set as active"); ok {
+		t.Error("a disabled subscription must not offer 'Set as active'")
 	}
+
+	// An enabled, inactive one is the only case where activating is a real step.
+	assertActions(t, "inactive detail", subscriptionDetailMenu(cfg, 1), map[string]string{
+		"Set as active": "sub switch 1",
+	})
 
 	// One with auto-update off offers to turn it back on.
 	if it, ok := findItem(subscriptionDetailMenu(cfg, 1), "Turn scheduled update on"); !ok {
@@ -225,24 +257,49 @@ func TestSubscriptionDetailMenuOpensWithInfoRows(t *testing.T) {
 	if !items[0].info {
 		t.Fatalf("first detail row %q is not an info row", items[0].label)
 	}
-	if got := firstSelectable(items); items[got].label != "Set as active" {
+	if got := firstSelectable(items); items[got].label != "Update now" {
 		t.Errorf("cursor starts on %q, want the first real action", items[got].label)
 	}
 }
 
-// Placeholder rows must never quit the menu: runMenu treats an empty action as
-// "exit", so they carry the "noop" sentinel instead.
-func TestPlaceholderRowsAreNoop(t *testing.T) {
-	empty := &config.Config{}
-	for _, items := range [][]menuItem{subscriptionMenu(empty), switchSubscriptionMenu(empty), subscriptionsMenu(empty)} {
-		for _, it := range items {
-			if it.info {
-				continue
-			}
-			if it.disabled != "" && it.action == "" && len(it.sub) == 0 {
-				t.Errorf("placeholder %q has an empty action and would exit the menu", it.label)
-			}
+// Grey means "discouraged", never "inert": every greyed row must carry an action
+// that really runs once confirmed. A row the menu cannot act on at all is stated
+// as info or left out, so no placeholder may creep back in.
+func TestGreyedRowsAlwaysRun(t *testing.T) {
+	cfgs := []*config.Config{testConfig(), {}}
+	states := []svc.State{{}, {Installed: true}, {Installed: true, Running: true}}
+
+	var menus [][]menuItem
+	for _, cfg := range cfgs {
+		menus = append(menus, subscriptionsMenu(cfg), subscriptionMenu(cfg), switchSubscriptionMenu(cfg))
+		for i := range cfg.Subscriptions {
+			menus = append(menus, subscriptionDetailMenu(cfg, i))
 		}
+	}
+	for _, st := range states {
+		menus = append(menus, rootMenu(st))
+	}
+
+	for _, items := range menus {
+		walkItems(items, func(it menuItem) {
+			if it.info || it.disabled == "" {
+				return
+			}
+			if it.action == "" && len(it.sub) == 0 {
+				t.Errorf("greyed row %q has no action; it would silently exit the menu", it.label)
+			}
+			if it.action == "noop" {
+				t.Errorf("greyed row %q is inert; grey must never mean unusable", it.label)
+			}
+		})
+	}
+}
+
+// walkItems visits every row of a menu tree, submenus included.
+func walkItems(items []menuItem, fn func(menuItem)) {
+	for _, it := range items {
+		fn(it)
+		walkItems(it.sub, fn)
 	}
 }
 
@@ -267,6 +324,64 @@ func TestMoveCursorSkipsInfoRows(t *testing.T) {
 	// A list of nothing but info rows leaves the cursor where it is.
 	if got := moveCursor([]menuItem{{info: true}}, 0, 1); got != 0 {
 		t.Errorf("moveCursor(all info) = %d, want 0", got)
+	}
+}
+
+// ansi matches the escape sequences lipgloss wraps styled text in, so the tests
+// below can look at the characters the reader actually sees.
+var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// Every row sits in the same column: the two-character prefix is the whole of a
+// row's indentation, so selecting a row swaps "  " for "❯ " and never shifts the
+// text sideways. Styles carrying padding of their own would break this.
+func TestMenuRowsShareOneIndent(t *testing.T) {
+	items := []menuItem{
+		{label: "state", value: "running", info: true},
+		{label: "Plain row", action: "status"},
+		{label: "Greyed row", action: "service start", disabled: "already running"},
+		{label: "Submenu ▸", sub: []menuItem{{label: "leaf", action: "version"}}},
+	}
+	for cursor := range items {
+		if items[cursor].info {
+			continue
+		}
+		m := menuModel{stack: [][]menuItem{items}, titles: []string{"zashhomo"}, cursors: []int{cursor}}
+		for _, line := range strings.Split(ansi.ReplaceAllString(m.View(), ""), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "❯ ") {
+				t.Errorf("cursor %d: line %q is not indented by a row prefix", cursor, line)
+			}
+		}
+	}
+}
+
+// The dim styles get their dimness from colour alone. Faint (SGR 2) stacked on
+// an already-muted colour is unreadable in some terminals and ignored in others,
+// so no style that has to stay legible may carry it.
+func TestDimStylesAvoidFaint(t *testing.T) {
+	themes := map[string]Theme{"dark": DefaultTheme(), "light": LightTheme()}
+	for name, th := range themes {
+		styles := map[string]lipgloss.Style{
+			"Disabled": th.Disabled,
+			"Hint":     th.Hint,
+			"InfoKey":  th.InfoKey,
+			"Label":    th.Label,
+			"MenuItem": th.MenuItem,
+		}
+		for label, st := range styles {
+			if st.GetFaint() {
+				t.Errorf("%s theme: %s is faint", name, label)
+			}
+		}
+		// The three row styles must agree on indentation, or a row would jump as
+		// the cursor passes over it.
+		for label, st := range map[string]lipgloss.Style{"MenuItem": th.MenuItem, "Selected": th.Selected, "Disabled": th.Disabled} {
+			if got := st.GetPaddingLeft(); got != 0 {
+				t.Errorf("%s theme: %s pads %d columns; indentation belongs to the row prefix", name, label, got)
+			}
+		}
 	}
 }
 

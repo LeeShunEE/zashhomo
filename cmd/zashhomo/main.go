@@ -539,19 +539,29 @@ func cmdMenu(_ []string) error {
 		if it.action == "" || it.action == "exit" {
 			return nil
 		}
-		// Placeholder rows ("No subscriptions configured") carry no command; go
-		// straight back to the menu instead of asking to force them through.
-		if it.action == "noop" {
-			continue
+		// A greyed action is discouraged in the current state; confirm before going
+		// ahead. This runs before clearing the screen so cancelling leaves the
+		// terminal as it was — only an action that will actually run wipes it.
+		if it.disabled != "" {
+			ok, err := confirmForce(it)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
 		}
 		clearScreen()
-		// A greyed action doesn't apply in the current state; make the user
-		// confirm before forcing it through.
-		if it.disabled != "" && !confirmForce(it.label, it.disabled) {
-			continue
-		}
 		fields := strings.Fields(it.action)
 		switch fields[0] {
+		case "sub-enable-switch":
+			// Switching to a disabled subscription means enabling it first; the
+			// confirmation already said so, so do both without asking again.
+			if err := dispatch("sub", []string{"enable", fields[1]}); err != nil {
+				printCmdError(err)
+			} else if err := dispatch("sub", []string{"switch", fields[1]}); err != nil {
+				printCmdError(err)
+			}
 		case "sub-add":
 			url := promptLine("Subscription URL (blank to cancel): ")
 			if url == "" {
@@ -587,18 +597,20 @@ func cmdMenu(_ []string) error {
 	}
 }
 
-// confirmForce warns that an action doesn't apply in the current state (reason)
-// and asks whether to run it anyway. It returns true to proceed.
-func confirmForce(label, reason string) bool {
-	fmt.Printf("%s — %s.\n", strings.TrimSuffix(label, " ▸"), reason)
-	switch strings.ToLower(promptLine("Run it anyway? [y/N]: ")) {
-	case "y", "yes":
-		fmt.Println()
-		return true
-	default:
-		fmt.Println("cancelled")
-		return false
+// confirmForce states why a greyed row is discouraged and asks whether to go
+// ahead. Like every other decision in the menu it is answered with the arrow
+// keys and defaults to Cancel, so a stray Enter never runs the action.
+func confirmForce(it menuItem) (bool, error) {
+	yes := it.confirmYes
+	if yes == "" {
+		yes = "Run it anyway"
 	}
+	return runConfirm(confirmModel{
+		title:    strings.TrimSuffix(it.label, " ▸"),
+		details:  []string{it.disabled},
+		noLabel:  "Cancel",
+		yesLabel: yes,
+	})
 }
 
 // promptLine prints a prompt and reads one trimmed line from stdin.
@@ -1525,8 +1537,11 @@ func printSubscriptions(p *paths.Paths, cfg *config.Config) {
 			marker = theme.StatusOk.Render("▸ ")
 		}
 		fmt.Printf("%s[%d] %s%s\n", marker, i, theme.OutputValue.Render(s.DisplayName(i)), subscriptionTags(s, i == active))
-		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
-		fmt.Printf("      %s\n", theme.Hint.Render("updated "+lastUpdated(s)+" · "+scheduleSummary(cfg, s)))
+		// These two lines are what `sub list` was run to see; the six-space gutter
+		// already marks them as belonging to the entry above, so they stay unstyled
+		// rather than being dimmed below the name they describe.
+		fmt.Printf("      %s\n", s.URL)
+		fmt.Printf("      updated %s · %s\n", lastUpdated(s), scheduleSummary(cfg, s))
 	}
 
 	fmt.Println("\nswitch:  zashhomo sub switch <index>          (make it the active profile)")

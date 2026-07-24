@@ -54,18 +54,22 @@ func LightPalette() ColorPalette {
 type Theme struct {
 	Palette ColorPalette
 
-	// Style components
+	// Style components. Disabled and Hint deliberately carry no Faint: SGR 2 is
+	// implemented inconsistently across terminals and, stacked on the already-dim
+	// Muted colour, drops the contrast ratio below legibility. The dim/normal
+	// hierarchy comes from colour alone.
 	Banner     lipgloss.Style
 	Title      lipgloss.Style
 	Header     lipgloss.Style
 	Selected   lipgloss.Style
-	Disabled   lipgloss.Style
-	Hint       lipgloss.Style
+	Disabled   lipgloss.Style // an option that doesn't fit the current state but still runs
+	Hint       lipgloss.Style // footer key hints and asides the reader may skip
+	InfoKey    lipgloss.Style // the label half of a menu info row; its value is left unstyled
 	Label      lipgloss.Style
 	StatusOk   lipgloss.Style
 	StatusWarn lipgloss.Style
 	Danger     lipgloss.Style
-	MenuItem   lipgloss.Style
+	MenuItem   lipgloss.Style // a plain row; indentation comes from the caller's prefix
 	Card       lipgloss.Style
 
 	// Output styles for command results
@@ -92,11 +96,11 @@ func DefaultTheme() Theme {
 			Bold(true).
 			Foreground(p.Accent),
 		Disabled: lipgloss.NewStyle().
-			Foreground(p.Muted).
-			Faint(true),
+			Foreground(p.Muted),
 		Hint: lipgloss.NewStyle().
-			Foreground(p.Muted).
-			Faint(true),
+			Foreground(p.Muted),
+		InfoKey: lipgloss.NewStyle().
+			Foreground(p.Secondary),
 		Label: lipgloss.NewStyle().
 			Foreground(p.Secondary).
 			Width(8),
@@ -108,8 +112,7 @@ func DefaultTheme() Theme {
 		Danger: lipgloss.NewStyle().
 			Foreground(p.Danger).
 			Bold(true),
-		MenuItem: lipgloss.NewStyle().
-			PaddingLeft(2),
+		MenuItem: lipgloss.NewStyle(),
 		Card: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(p.Border).
@@ -147,11 +150,11 @@ func LightTheme() Theme {
 			Bold(true).
 			Foreground(p.Accent),
 		Disabled: lipgloss.NewStyle().
-			Foreground(p.Muted).
-			Faint(true),
+			Foreground(p.Muted),
 		Hint: lipgloss.NewStyle().
-			Foreground(p.Muted).
-			Faint(true),
+			Foreground(p.Muted),
+		InfoKey: lipgloss.NewStyle().
+			Foreground(p.Secondary),
 		Label: lipgloss.NewStyle().
 			Foreground(p.Secondary).
 			Width(8),
@@ -163,8 +166,7 @@ func LightTheme() Theme {
 		Danger: lipgloss.NewStyle().
 			Foreground(p.Danger).
 			Bold(true),
-		MenuItem: lipgloss.NewStyle().
-			PaddingLeft(2),
+		MenuItem: lipgloss.NewStyle(),
 		Card: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(p.Border).

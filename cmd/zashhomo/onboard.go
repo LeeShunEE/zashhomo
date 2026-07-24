@@ -318,7 +318,9 @@ func (m onboardChoice) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m onboardChoice) View() string {
 	var card strings.Builder
 	card.WriteString(theme.Title.Render(m.heading))
-	card.WriteString("\n\n  " + theme.Hint.Render(m.step.why))
+	// why is the only thing the run/skip decision rests on, so it is body text
+	// rather than an aside: left unstyled, the brightest thing in the card.
+	card.WriteString("\n\n  " + m.step.why)
 	card.WriteString("\n  " + theme.OutputValue.Render(m.step.state))
 	if m.step.done {
 		card.WriteString("\n  " + theme.StatusOk.Render("✓ already done — "+m.step.doneNote))
@@ -340,7 +342,7 @@ func (m onboardChoice) View() string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(theme.Hint.Render("↑/↓ move · enter select · esc quit the guide"))
+	b.WriteString("  " + theme.Hint.Render("↑/↓ move · enter select · esc quit the guide"))
 	b.WriteByte('\n')
 	return b.String()
 }

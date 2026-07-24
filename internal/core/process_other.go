@@ -162,6 +162,13 @@ func isOurMihomo(pid int, binPath string) bool {
 	// Get the current user's UID to avoid killing other users' processes
 	currentUID := os.Getuid()
 
+	// Check process ownership by verifying UID on Linux
+	// On other Unix systems, we rely on signal permission checks
+	if processUID := getProcessUID(pid); processUID != -1 && processUID != currentUID {
+		// Process belongs to a different user
+		return false
+	}
+
 	// Check process ownership
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -180,10 +187,6 @@ func isOurMihomo(pid int, binPath string) bool {
 		return false
 	}
 
-	// Check if the process is owned by current user
-	// This is a simplification; in production you'd want to check /proc/PID/status on Linux
-	// or use sysctl on macOS. For now, we rely on the signal check above.
-
 	// Compare paths (resolve both to absolute paths)
 	absExe, err := filepath.Abs(exePath)
 	if err != nil {
@@ -197,6 +200,29 @@ func isOurMihomo(pid int, binPath string) bool {
 
 	// Check if it's the same binary or a mihomo binary
 	return absExe == absBin || strings.Contains(exePath, "mihomo")
+}
+
+// getProcessUID returns the UID of the process owner, or -1 if it cannot be determined.
+// On Linux, this reads /proc/PID/status; on other Unix systems, it returns -1 (fallback to signal check).
+func getProcessUID(pid int) int {
+	// Linux: read Uid field from /proc/PID/status
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "Uid:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if uid, err := strconv.Atoi(fields[1]); err == nil {
+						return uid
+					}
+				}
+			}
+		}
+	}
+
+	// macOS and other Unix: use lsof or ps to check ownership
+	// This is more complex, so we return -1 to fall back to signal check
+	return -1
 }
 
 // getProcessExePath returns the executable path for a process.

@@ -30,6 +30,15 @@ func isRoot() bool {
 	return runtime.GOOS != "windows" && os.Geteuid() == 0
 }
 
+// The root-owned locations a system-wide Unix install uses. They are named
+// because two things need them: resolving the paths when running as root, and
+// spotting an unprivileged session that is about to edit a *different* config
+// than the installed service reads (see ForeignSystemInstall).
+const (
+	systemDataDir   = "/var/lib/zashhomo"
+	systemConfigDir = "/etc/zashhomo"
+)
+
 // dataDir picks the platform data directory root.
 func dataDir() string {
 	if v := os.Getenv("ZASHHOMO_DATA"); v != "" {
@@ -44,7 +53,7 @@ func dataDir() string {
 		return filepath.Join(pd, "zashhomo")
 	default:
 		if isRoot() {
-			return "/var/lib/zashhomo"
+			return systemDataDir
 		}
 		if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 			return filepath.Join(xdg, "zashhomo")
@@ -64,7 +73,7 @@ func configDir() string {
 		return dataDir() // keep everything together under ProgramData on Windows
 	default:
 		if isRoot() {
-			return "/etc/zashhomo"
+			return systemConfigDir
 		}
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			return filepath.Join(xdg, "zashhomo")
@@ -109,6 +118,85 @@ func New() *Paths {
 // offered to this user. Its presence — not its contents — is the signal.
 func (p *Paths) OnboardMark() string {
 	return filepath.Join(p.State, "onboarded")
+}
+
+// Writable reports whether this process can modify the file at path, or create
+// it when it does not exist yet. Callers use it to decide whether an operation
+// has to be re-run elevated.
+//
+// The probe deliberately targets the file itself rather than its directory. On
+// Windows the data lives under ProgramData, whose default ACL lets a standard
+// user *create* new files while denying writes to the files an elevated install
+// already wrote — so probing the directory with a fresh temp file would report
+// "writable" on precisely the case that needs elevation.
+func Writable(path string) bool {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err == nil {
+		f.Close()
+		return true
+	}
+	if !os.IsNotExist(err) {
+		return false
+	}
+	// Nothing there yet, so the real question is whether the tree would accept a
+	// new file. Walk up to the nearest directory that exists — on a first run the
+	// parents have to be created too — and probe there instead.
+	dir := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false // walked to the root without finding anything
+		}
+		dir = parent
+	}
+	probe, err := os.CreateTemp(dir, ".zashhomo-probe-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	probe.Close()
+	os.Remove(name)
+	return true
+}
+
+// ManagedWritable reports whether this session can modify the files zashhomo
+// manages on the user's behalf. It probes the self config and the generated
+// mihomo config separately: they are written by different code paths, so after a
+// mixed sequence of elevated and plain runs their ownership can genuinely
+// differ, and being able to write one says nothing about the other.
+func (p *Paths) ManagedWritable() bool {
+	return Writable(p.Config) && Writable(p.MihomoConfig())
+}
+
+// ForeignSystemInstall returns the config path of a root-owned install that this
+// unprivileged session is *not* looking at, or "" when there is nothing to warn
+// about. It is the Unix counterpart to the Windows elevation check: there, a
+// write to ProgramData fails loudly; here New() silently resolves to the user's
+// own ~/.config copy instead, so an unprivileged `zashhomo sub add` would report
+// success while the installed service keeps reading /etc/zashhomo.
+//
+// An explicit ZASHHOMO_CONFIG_DIR means the caller has chosen a location on
+// purpose, so it is left alone.
+func ForeignSystemInstall() string {
+	return foreignSystemInstall(filepath.Join(systemConfigDir, "zashhomo.yaml"))
+}
+
+// foreignSystemInstall is ForeignSystemInstall with the system config location
+// as a parameter, so the decision can be tested without a root-owned /etc.
+func foreignSystemInstall(sysConfig string) string {
+	if runtime.GOOS == "windows" || isRoot() {
+		return ""
+	}
+	if os.Getenv("ZASHHOMO_CONFIG_DIR") != "" {
+		return ""
+	}
+	if _, err := os.Stat(sysConfig); err != nil {
+		return ""
+	}
+	return sysConfig
 }
 
 // EnsureDirs creates the directories zashhomo writes into.

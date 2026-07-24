@@ -167,6 +167,32 @@ func ensureElevated(what string, cmd []string) (elevated bool, err error) {
 	return true, nil
 }
 
+// ensureCanWrite gates every command that changes the files zashhomo owns — the
+// config, the profile cache, the generated mihomo config, the installed kernel
+// and panel. Those live beside the service (ProgramData on Windows, /etc and
+// /var/lib for a root install), so a plain user session cannot touch them.
+//
+// It returns (true, nil) when the work has been handed to an elevated copy of
+// this process, exactly like ensureElevated, and (false, nil) when the current
+// session may proceed as it is. Elevation is decided by an actual write probe
+// rather than by "am I admin", so a data directory the user does own (via
+// ZASHHOMO_DATA, or a non-root Unix install) never raises a needless prompt.
+func ensureCanWrite(what string, cmd []string) (elevated bool, err error) {
+	// Unix only: a root-owned install this session isn't looking at. Elevating is
+	// not the fix — New() would still resolve to the user's own copy — so stop
+	// with the command that does work rather than write a config nothing reads.
+	if sys := paths.ForeignSystemInstall(); sys != "" {
+		return false, fmt.Errorf("zashhomo is installed system-wide (%s), but this session would edit your personal copy instead,\n"+
+			"which the service never reads.\nRun it as root:  sudo zashhomo %s\n"+
+			"(or set ZASHHOMO_CONFIG_DIR to manage a separate per-user setup on purpose)",
+			sys, strings.Join(cmd, " "))
+	}
+	if paths.New().ManagedWritable() {
+		return false, nil
+	}
+	return ensureElevated(what, cmd)
+}
+
 // cmdService controls the installed OS service. Lifecycle actions need admin
 // rights, so it checks (and elevates) before touching the service manager.
 func cmdService(args []string) error {
@@ -852,6 +878,17 @@ func cmdUpdate(args []string) error {
 		doAll = true
 	}
 
+	// --core and --ui unpack into the data directory and record the new tags in
+	// the config, so they need the rights the installer had. A lone --self only
+	// replaces the binary in the user's own install directory, which the session
+	// already owns — prompting there would be friction for nothing.
+	touchesData := doCore || doUI || doAll
+	if touchesData {
+		if elevated, err := ensureCanWrite("Updating the installed components", append([]string{"update"}, args...)); err != nil || elevated {
+			return err
+		}
+	}
+
 	p := paths.New()
 	cfg, err := loadOrInit(p)
 	if err != nil {
@@ -874,8 +911,13 @@ func cmdUpdate(args []string) error {
 		}
 		cfg.UIVersion = tag
 	}
-	if err := cfg.Save(); err != nil {
-		return err
+	// Only the two branches above change a recorded version. Saving unconditionally
+	// would write the config for a lone --self too — the one case deliberately let
+	// through without elevation, and so the one case where the write would fail.
+	if touchesData {
+		if err := cfg.Save(); err != nil {
+			return err
+		}
 	}
 	if doSelf || doAll {
 		if err := selfUpdate(); err != nil {
@@ -971,9 +1013,47 @@ func selfAssetName(_ string) string {
 	return name
 }
 
+// subMutates reports whether a `sub` invocation changes anything on disk. The
+// listings — and the argument-less forms of `interval`, which only report the
+// current value — must not raise an elevation prompt just to print something.
+func subMutates(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "add", "update", "switch", "use", "activate", "enable", "disable",
+		"auto", "remove", "rm", "del", "delete", "edit":
+		return true
+	case "interval":
+		rest := args[1:]
+		if len(rest) == 0 {
+			return false // `sub interval` just prints the global value
+		}
+		// A duration always carries a unit, so a leading integer is unambiguously
+		// an index — and that per-subscription form only writes when a value
+		// follows it (`sub interval 0` reports, `sub interval 0 6h` sets).
+		if _, err := strconv.Atoi(rest[0]); err != nil {
+			return true // global form: `sub interval 6h`
+		}
+		return len(rest) >= 2
+	}
+	return false
+}
+
 func cmdSub(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("sub: expected 'add', 'list', 'show', 'switch', 'enable', 'disable', 'auto', 'interval', 'update', 'remove', or 'edit'")
+	}
+	// Every mutating form rewrites zashhomo.yaml, and most also touch the profile
+	// cache and the generated mihomo config — all of which live beside the service.
+	// Elevate before loadOrInit, which already tries to create those directories.
+	// The argument list is fully concrete by this point (the menu asks for URLs and
+	// durations before dispatching), so it survives the trip across the elevation
+	// boundary, where the hidden child process cannot prompt for anything.
+	if subMutates(args) {
+		if elevated, err := ensureCanWrite("Changing subscriptions", append([]string{"sub"}, args...)); err != nil || elevated {
+			return err
+		}
 	}
 	p := paths.New()
 	cfg, err := loadOrInit(p)

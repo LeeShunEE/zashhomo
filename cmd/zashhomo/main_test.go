@@ -77,6 +77,48 @@ func TestPopFlag(t *testing.T) {
 	}
 }
 
+// subMutates decides whether a `sub` command raises an elevation prompt, so a
+// wrong answer either prompts for a plain listing or lets a write fail with
+// access denied. The `interval` forms carry the whole subtlety: the same verb
+// reports state or changes it depending on how many arguments follow.
+func TestSubMutates(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"empty", nil, false},
+		{"list", []string{"list"}, false},
+		{"ls", []string{"ls"}, false},
+		{"show", []string{"show", "0"}, false},
+		{"unknown verb", []string{"bogus"}, false},
+		{"add", []string{"add", "https://example.com/sub"}, true},
+		{"update all", []string{"update"}, true},
+		{"update one", []string{"update", "1"}, true},
+		{"switch", []string{"switch", "0"}, true},
+		{"switch alias", []string{"use", "0"}, true},
+		{"enable", []string{"enable", "0"}, true},
+		{"disable", []string{"disable", "0"}, true},
+		{"auto", []string{"auto", "0", "on"}, true},
+		{"remove", []string{"remove", "0"}, true},
+		{"remove alias", []string{"rm", "0"}, true},
+		{"edit", []string{"edit"}, true},
+		{"interval report global", []string{"interval"}, false},
+		{"interval report one", []string{"interval", "0"}, false},
+		{"interval set global", []string{"interval", "6h"}, true},
+		{"interval set one", []string{"interval", "0", "6h"}, true},
+		{"interval clear one", []string{"interval", "1", "default"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := subMutates(tt.args); got != tt.want {
+				t.Errorf("subMutates(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFirstNonEmpty(t *testing.T) {
 	tests := []struct {
 		vals []string

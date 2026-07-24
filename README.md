@@ -4,7 +4,7 @@
 [zashboard](https://github.com/Zephyruso/zashboard) Web 面板。一个 <15MB 的静态单二进制，
 一行命令即可装好内核 + 面板并常驻守护。
 
-![](assets/image.png)
+![zashhomo screenshot](assets/image.png)
 
 ## 特性
 
@@ -13,7 +13,10 @@
 - **内置面板托管 + 统一密钥**：自带 HTTP 静态站托管 zashboard，并反向代理 Clash REST API。
   同一个自动生成的 secret 既保护 mihomo API（写入内核配置、控制器仅回环），也作为面板访问凭证
   （首次用带 token 的 URL 解锁、之后靠 cookie）。
-- **订阅 / 配置管理**：以 mihomo `proxy-providers` 方式合并多个订阅，定时刷新并热重载。
+- **订阅 / 配置管理**：采用 profile 模型，每条订阅独立缓存，同一时刻仅一条生效；支持离线切换、独立刷新间隔与定时更新开关。
+- **系统代理一键切换**：`zashhomo system-proxy enable|disable` 跨平台设置系统代理（Windows 注册表、macOS networksetup、Linux GNOME gsettings），状态自动持久化并在服务启停时同步。
+- **TUN 模式持久化**：面板中开关 TUN 会自动同步到 `zashhomo.yaml`，跨重启保留。
+- **交互式菜单**：`zashhomo -i` 启动 TUI 管理界面（方向键选择），含状态总览、订阅管理、新手引导。
 - **系统服务**：通过 [kardianos/service](https://github.com/kardianos/service) 统一封装
   systemd / launchd / Windows 服务，开机自启。
 
@@ -31,13 +34,16 @@ Windows（PowerShell）：
 irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 ```
 
+> **注意**：当前 Release 仅发布 Windows 预编译包（amd64/arm64）。Linux/macOS 用户请
+> 从源码构建（见下文），或等待后续版本启用对应平台构建。
+
 安装完成后，`zashhomo status` 会打印一个带 token 的面板地址（形如
 `http://127.0.0.1:9191/?token=<secret>`），浏览器打开即自动登录为 zashboard 面板。默认仅监听
 回环，远程访问见下文「访问与安全」。
 
 ## 命令
 
-```
+```text
 zashhomo install [--mixed-port N] [--web-port N] [--web-addr ADDR] [--force]
                               下载内核+面板 → 生成默认配置 → 注册系统服务 → 启动
                               （服务已存在时会提示是否替换；--force 直接强制替换）
@@ -98,17 +104,20 @@ zashhomo sub interval 1 30m   # 只给这条设 30 分钟的刷新间隔
 
 ## 目录布局
 
-| 平台            | 数据目录                                   | 自身配置                          |
-| --------------- | ------------------------------------------ | --------------------------------- |
-| Linux/macOS（用户） | `~/.local/share/zashhomo`                  | `~/.config/zashhomo/zashhomo.yaml` |
-| Linux/macOS（root） | `/var/lib/zashhomo`                        | `/etc/zashhomo/zashhomo.yaml`     |
-| Windows         | `%ProgramData%\zashhomo`                   | 同数据目录                        |
+| 平台 | 数据目录 | 自身配置 |
+| --- | --- | --- |
+| Linux/macOS（用户） | `~/.local/share/zashhomo`（或 `$XDG_DATA_HOME/zashhomo`） | `~/.config/zashhomo/zashhomo.yaml`（或 `$XDG_CONFIG_HOME/zashhomo/zashhomo.yaml`） |
+| Linux/macOS（root） | `/var/lib/zashhomo` | `/etc/zashhomo/zashhomo.yaml` |
+| Windows | `%ProgramData%\zashhomo` | 同数据目录 |
 
 数据目录内含：`bin/`（mihomo 二进制）、`ui/`（zashboard 静态站）、`subs/`（各订阅的原始
-文件，按 id 命名）、`providers/`（mihomo 自身的 provider 缓存）、`config.yaml`（由生效订阅
-生成的 mihomo 配置）、`zashhomo.log`。
+文件，按 id 命名）、`config.yaml`（由生效订阅生成的 mihomo 配置）、`zashhomo.log`。
 
-可用环境变量覆盖：`ZASHHOMO_DATA`、`ZASHHOMO_CONFIG_DIR`。
+可用环境变量覆盖：
+- `ZASHHOMO_DATA` — 数据目录
+- `ZASHHOMO_CONFIG_DIR` — 配置目录
+- `ZASHHOMO_BIN` — 安装目录（存放 zashhomo 可执行文件）
+- `ZASHHOMO_STATE_DIR` — 状态目录（存放 UI 状态如 onboarding 标记）
 
 ## 配置（`zashhomo.yaml`）
 
@@ -117,6 +126,7 @@ controller_addr: 127.0.0.1:9090   # mihomo external-controller（仅回环）
 secret: <自动生成>                 # 同时保护 Clash API 与面板访问
 web_addr: 127.0.0.1:9191          # 面板 + API 反代监听地址（默认仅回环）
 mixed_port: 9190                  # mihomo 混合代理端口（可用 --mixed-port 改）
+system_proxy: false               # 是否自动管理系统代理（由 system-proxy 命令维护）
 sub_interval: 12h                 # 全局订阅刷新间隔
 active_sub: a1b2c3d4e5f60718      # 当前生效订阅的 id（由 sub switch 维护）
 subscriptions:                    # 订阅列表
@@ -127,6 +137,9 @@ subscriptions:                    # 订阅列表
     no_auto_update: false         #   true 表示关掉这条的定时更新
     interval: 30m                 #   该订阅独立的刷新间隔（留空则跟随 sub_interval）
     updated_at: 2026-07-24T10:00:00Z  # 上次成功刷新时间（自动记录）
+tun:                              # TUN 模式配置（由面板开关同步，自动持久化）
+  enable: false
+  stack: system
 core_version: ""                  # 已装内核版本（自动记录）
 ui_version: ""                    # 已装面板版本（自动记录）
 ```
@@ -148,7 +161,7 @@ ui_version: ""                    # 已装面板版本（自动记录）
 
 ## 从源码构建
 
-需要 Go 1.23+：
+需要 Go 1.24+：
 
 ```sh
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o zashhomo ./cmd/zashhomo
@@ -163,7 +176,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 ## 设计说明
 
-- 仅依赖标准库 + `gopkg.in/yaml.v3` + `github.com/kardianos/service`，无 cobra 等重型框架；
+- 依赖标准库 + `gopkg.in/yaml.v3` + `github.com/kardianos/service` + `github.com/charmbracelet/bubbletea`（交互式菜单），无 cobra 等重型 CLI 框架；
   CLI 子命令为手写 dispatch，`CGO_ENABLED=0` 全静态 + `-ldflags "-s -w"` 瘦身。
 - 内核与面板默认都只听回环；面板与 Clash API 共用同一 secret，反代统一注入，凭据不外泄。
 

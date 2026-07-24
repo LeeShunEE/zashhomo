@@ -6,9 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kardianos/service"
 )
+
+// uninstallWait bounds how long Uninstall waits for the service manager to
+// actually drop the service record after the removal is requested.
+const uninstallWait = 15 * time.Second
 
 const (
 	serviceName        = "zashhomo"
@@ -173,11 +178,14 @@ func Install(exePath string) error {
 	return nil
 }
 
-// Uninstall stops (best effort) and removes the service.
+// Uninstall stops (best effort) and removes the service. It returns only once
+// the service manager has really dropped the record: removal is not necessarily
+// effective the moment the call returns (see waitUninstalled), and a reinstall
+// issued too early fails with "service already exists".
 func Uninstall() error {
 	_ = Control("stop")
 	if err := Control("uninstall"); err != nil {
 		return fmt.Errorf("uninstall service: %w", err)
 	}
-	return nil
+	return waitUninstalled(uninstallWait)
 }

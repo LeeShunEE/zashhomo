@@ -331,9 +331,9 @@ func TestMoveCursorSkipsInfoRows(t *testing.T) {
 // below can look at the characters the reader actually sees.
 var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// Every row sits in the same column: the two-character prefix is the whole of a
-// row's indentation, so selecting a row swaps "  " for "❯ " and never shifts the
-// text sideways. Styles carrying padding of their own would break this.
+// Every row sits in a consistent column: info and unselected options sink into
+// a 4-space gutter, while the selected row pulls left to 2 characters (arrow +
+// space), making the cursor stand out by depth rather than just colour.
 func TestMenuRowsShareOneIndent(t *testing.T) {
 	items := []menuItem{
 		{label: "state", value: "running", info: true},
@@ -350,7 +350,14 @@ func TestMenuRowsShareOneIndent(t *testing.T) {
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			if !strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "❯ ") {
+			// Skip the footer hint line — it sits at depth 2, one level out
+			// from the menu items.
+			if strings.Contains(line, "↑/↓") {
+				continue
+			}
+			// Info and unselected rows: 4-space gutter
+			// Selected row: 2-character prefix (arrow + space)
+			if !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "❯ ") {
 				t.Errorf("cursor %d: line %q is not indented by a row prefix", cursor, line)
 			}
 		}

@@ -435,9 +435,10 @@ func (m menuModel) View() string {
 	for i, it := range m.current() {
 		// Info rows state the context the menu acts on. The label is dim and the
 		// value is left unstyled, the same split the status card above uses, so
-		// the part worth reading is the bright one.
+		// the part worth reading is the bright one. They sit at the same depth
+		// as unselected options, marking them as context rather than choices.
 		if it.info {
-			b.WriteString("  " + theme.InfoKey.Render(fmt.Sprintf("%-*s", keyWidth, it.label)) + it.value)
+			b.WriteString("    " + theme.InfoKey.Render(fmt.Sprintf("%-*s", keyWidth, it.label)) + it.value)
 			b.WriteByte('\n')
 			continue
 		}
@@ -447,7 +448,11 @@ func (m menuModel) View() string {
 			label += "  (" + it.disabled + ")"
 		}
 
-		prefix := "  "
+		// Unselected rows sink into a 4-space gutter, grouping them as the list.
+		// The selected row shrinks to 2 characters (arrow + space), pulling the
+		// text left to stand out. The cursor stays visually anchored — only the
+		// depth changes, not the column of the arrow itself.
+		prefix := "    "
 		if i == cur {
 			prefix = "❯ "
 		}

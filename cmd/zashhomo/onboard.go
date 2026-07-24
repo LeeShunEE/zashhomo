@@ -331,7 +331,7 @@ func (m onboardChoice) View() string {
 	b.WriteString("\n\n")
 
 	for i, opt := range m.options {
-		prefix := "  "
+		prefix := "    "
 		if i == m.cursor {
 			prefix = "❯ "
 			b.WriteString(theme.Selected.Render(prefix + opt))

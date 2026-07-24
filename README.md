@@ -44,8 +44,10 @@ Windows（PowerShell）：
 irm https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.ps1 | iex
 ```
 
-> **注意**：当前 Release 仅发布 Windows 预编译包（amd64/arm64）。Linux/macOS 用户请
-> 从源码构建（见下文），或等待后续版本启用对应平台构建。
+> **平台支持说明**：
+> - **Windows**：主要支持平台，经过充分测试。
+> - **Linux / macOS**：当前为**实验性支持**，可能存在较多 bug 和功能适配不完全（如系统代理、服务管理等）。
+>   建议从源码构建试用，问题反馈欢迎提 [Issue](https://github.com/LeeShunEE/zashhomo/issues)。
 
 安装完成后，`zashhomo status` 会打印一个带 token 的面板地址（形如
 `http://127.0.0.1:9191/?token=<secret>`），浏览器打开即自动登录为 zashboard 面板。默认仅监听
@@ -194,5 +196,5 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
 
 推送 `v*` tag 触发 `.github/workflows/release.yml`：当前仅编译 windows(amd64/arm64)，
 产物 `zashhomo-<version>-windows-<arch>.exe` + `SHA256SUMS.txt` 上传至 Releases。
-其他平台（Linux/macOS）暂时禁用，后续按需启用。
+Linux/macOS 平台支持为实验性质，暂不发布预编译包，可从源码构建。
 仓库地址：[github.com/LeeShunEE/zashhomo](https://github.com/LeeShunEE/zashhomo)。

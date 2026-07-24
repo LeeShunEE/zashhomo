@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
 	"github.com/LeeShunEE/zashhomo/internal/svc"
@@ -21,8 +23,12 @@ type onboardStep struct {
 	state    string // where things stand right now
 	done     bool
 	doneNote string
-	// prompt asks for free-form input before running; an empty answer skips the
-	// step. Nil for steps that need no input.
+	// runLabel names the "do it" option, phrased for this step rather than as a
+	// generic "run this step".
+	runLabel string
+	// prompt asks for free-form input before running; an empty answer cancels the
+	// step. Empty for steps that need no input — which is most of them, because
+	// every other decision is made with the arrow keys.
 	prompt string
 	// run executes the step. answer holds the prompt reply (empty when prompt is
 	// unset).
@@ -41,10 +47,11 @@ func onboardSteps(st svc.State, cfg *config.Config) []onboardStep {
 	}
 
 	installed := onboardStep{
-		title: "Install the service",
-		why:   "Downloads the mihomo kernel and the zashboard panel, writes the config, then registers and starts the background service.",
-		state: "service: not installed",
-		run:   func(string) error { return dispatch("install", nil) },
+		title:    "Install the service",
+		why:      "Downloads the mihomo kernel and the zashboard panel, writes the config, then registers and starts the background service.",
+		state:    "service: not installed",
+		runLabel: "Install it now",
+		run:      func(string) error { return dispatch("install", nil) },
 	}
 	if st.Installed {
 		installed.done = true
@@ -56,24 +63,28 @@ func onboardSteps(st svc.State, cfg *config.Config) []onboardStep {
 	}
 
 	subscribe := onboardStep{
-		title:  "Add a subscription",
-		why:    "A subscription supplies the proxy nodes. Without one the kernel starts but has nothing to route through.",
-		state:  fmt.Sprintf("subscriptions: %d", subs),
-		prompt: "Subscription URL (blank to skip): ",
+		title:    "Add a subscription",
+		why:      "A subscription supplies the proxy nodes. Without one the kernel starts but has nothing to route through.",
+		state:    fmt.Sprintf("subscriptions: %d", subs),
+		runLabel: "Add a subscription",
+		// The only step that needs the keyboard: a URL cannot be picked from a list.
+		prompt: "Subscription URL (blank to cancel): ",
 		run: func(url string) error {
 			return dispatch("sub", []string{"add", url})
 		},
 	}
 	if subs > 0 {
 		subscribe.done = true
-		subscribe.doneNote = fmt.Sprintf("%d already configured — run it again to add another", subs)
+		subscribe.doneNote = fmt.Sprintf("%d already configured", subs)
+		subscribe.runLabel = "Add another subscription"
 	}
 
 	restart := onboardStep{
-		title: "Restart the service",
-		why:   "Restarting makes the kernel pick up the generated config. Adding a subscription already tries a live reload, so this is a safety net.",
-		state: "service: not installed",
-		run:   func(string) error { return dispatch("service", []string{"restart"}) },
+		title:    "Restart the service",
+		why:      "Restarting makes the kernel pick up the generated config. Adding a subscription already tries a live reload, so this is a safety net.",
+		state:    "service: not installed",
+		runLabel: "Restart it now",
+		run:      func(string) error { return dispatch("service", []string{"restart"}) },
 	}
 	if st.Installed {
 		restart.state = "service: stopped"
@@ -83,10 +94,11 @@ func onboardSteps(st svc.State, cfg *config.Config) []onboardStep {
 	}
 
 	proxy := onboardStep{
-		title: "Enable the system proxy",
-		why:   "Points the OS at the local mixed port so ordinary apps go through mihomo without per-app configuration.",
-		state: "system proxy: off",
-		run:   func(string) error { return dispatch("system-proxy", []string{"enable"}) },
+		title:    "Enable the system proxy",
+		why:      "Points the OS at the local mixed port so ordinary apps go through mihomo without per-app configuration.",
+		state:    "system proxy: off",
+		runLabel: "Enable it now",
+		run:      func(string) error { return dispatch("system-proxy", []string{"enable"}) },
 	}
 	if proxyOn {
 		proxy.done = true
@@ -95,10 +107,11 @@ func onboardSteps(st svc.State, cfg *config.Config) []onboardStep {
 	}
 
 	panelStep := onboardStep{
-		title: "Open the dashboard",
-		why:   "Opens zashboard in your default browser, already logged in via the token in the URL.",
-		state: "panel: " + panelAddrOnly(cfg),
-		run:   func(string) error { return dispatch("dashboard", nil) },
+		title:    "Open the dashboard",
+		why:      "Opens zashboard in your default browser, already logged in via the token in the URL.",
+		state:    "panel: " + panelAddrOnly(cfg),
+		runLabel: "Open it now",
+		run:      func(string) error { return dispatch("dashboard", nil) },
 	}
 
 	return []onboardStep{installed, subscribe, restart, proxy, panelStep}
@@ -140,13 +153,17 @@ func cmdOnboard() error {
 	steps := onboardSteps(svc.GetState(), cfg)
 
 	fmt.Println(theme.OutputTitle.Render("zashhomo guided setup"))
-	fmt.Println("Five steps take you from nothing to a working proxy. Every step is optional —")
-	fmt.Println("skip anything you have already done, and quit whenever you like.")
+	fmt.Println("Five steps take you from nothing to a working proxy. Pick each answer with the")
+	fmt.Println("arrow keys — every step is optional, and you can quit from any of them.")
 	fmt.Println()
 
 	ran, skipped := 0, 0
 	for i, step := range steps {
-		switch outcome := runOnboardStep(i+1, len(steps), step); outcome {
+		outcome, err := runOnboardStep(i+1, len(steps), step)
+		if err != nil {
+			return err
+		}
+		switch outcome {
 		case onboardRan:
 			ran++
 		case onboardSkipped:
@@ -171,50 +188,72 @@ const (
 	onboardQuit
 )
 
-// runOnboardStep prints one step, asks what to do, and carries it out. A failing
-// step is reported but does not end the guide unless the user says so.
-func runOnboardStep(n, total int, step onboardStep) onboardOutcome {
-	fmt.Println(theme.Title.Render(fmt.Sprintf("Step %d/%d · %s", n, total, step.title)))
-	fmt.Printf("  %s\n", theme.Hint.Render(step.why))
-	fmt.Printf("  %s\n", theme.OutputValue.Render(step.state))
-	if step.done {
-		fmt.Printf("  %s\n", theme.StatusOk.Render("✓ already done — "+step.doneNote))
+// onboardAction is what the user picked for a step.
+type onboardAction int
+
+const (
+	actRun onboardAction = iota
+	actSkip
+	actQuit
+)
+
+// onboardOptions lays out the choices for a step, with the safe answer first so
+// the cursor starts there: a step still to do defaults to running it, one already
+// satisfied defaults to leaving it alone.
+func onboardOptions(step onboardStep) ([]string, []onboardAction) {
+	runLabel := step.runLabel
+	if runLabel == "" {
+		runLabel = "Run this step"
 	}
-	fmt.Println()
+	if step.done {
+		return []string{"Skip — already done", runLabel, "Quit the guide"},
+			[]onboardAction{actSkip, actRun, actQuit}
+	}
+	return []string{runLabel, "Skip this step", "Quit the guide"},
+		[]onboardAction{actRun, actSkip, actQuit}
+}
+
+// runOnboardStep asks what to do with one step and carries it out. The question
+// is answered with the arrow keys; only a step whose prompt is set (the
+// subscription URL) ever asks the user to type, and only after they chose to run
+// it. A failing step is reported but does not end the guide unless the user says
+// so.
+func runOnboardStep(n, total int, step onboardStep) (onboardOutcome, error) {
+	heading := fmt.Sprintf("Step %d/%d · %s", n, total, step.title)
+	labels, actions := onboardOptions(step)
+
+	choice, err := runOnboardChoice(onboardChoice{
+		heading: heading,
+		step:    step,
+		options: labels,
+	})
+	if err != nil {
+		return onboardQuit, err
+	}
+
+	// Escaping out of the chooser leaves the guide, same as picking "Quit".
+	action := actQuit
+	if choice >= 0 {
+		action = actions[choice]
+	}
+	switch action {
+	case actQuit:
+		return onboardQuit, nil
+	case actSkip:
+		fmt.Printf("%s\n\n", theme.Hint.Render(heading+" — skipped"))
+		return onboardSkipped, nil
+	}
+
+	// The alternate screen is gone by now, so reprint the heading: what follows is
+	// command output and it needs to say which step produced it.
+	fmt.Println(theme.Title.Render(heading))
 
 	answer := ""
 	if step.prompt != "" {
-		// The input doubles as the decision: a blank URL means "skip this step".
-		fmt.Println(theme.Hint.Render("  [q] quit the guide"))
-		answer = promptLine("  " + step.prompt)
-		switch {
-		case strings.EqualFold(answer, "q"):
-			return onboardQuit
-		case answer == "":
-			fmt.Println(theme.Hint.Render("  skipped"))
-			fmt.Println()
-			return onboardSkipped
-		}
-	} else {
-		hint := "  [Enter] run this step   [s] skip   [q] quit the guide"
-		if step.done {
-			// Enter leaves a satisfied step alone; redoing it takes a deliberate key.
-			hint = "  [Enter] skip   [r] run it anyway   [q] quit the guide"
-		}
-		fmt.Println(theme.Hint.Render(hint))
-
-		reply := strings.ToLower(promptLine("  > "))
-		if reply == "q" {
-			return onboardQuit
-		}
-		runIt := reply == "" || reply == "y"
-		if step.done {
-			runIt = reply == "r" || reply == "y"
-		}
-		if !runIt {
-			fmt.Println(theme.Hint.Render("  skipped"))
-			fmt.Println()
-			return onboardSkipped
+		answer = strings.TrimSpace(promptLine("  " + step.prompt))
+		if answer == "" {
+			fmt.Printf("%s\n\n", theme.Hint.Render("  nothing entered — step skipped"))
+			return onboardSkipped, nil
 		}
 	}
 
@@ -222,12 +261,103 @@ func runOnboardStep(n, total int, step onboardStep) onboardOutcome {
 	if err := step.run(answer); err != nil {
 		printCmdError(err)
 		fmt.Println()
-		if strings.EqualFold(promptLine("That step failed. Continue with the guide? [Y/n]: "), "n") {
-			return onboardQuit
+		carryOn, cerr := runConfirm(confirmModel{
+			title:    "That step failed",
+			details:  []string{step.title + " did not complete.", "The remaining steps do not depend on it finishing."},
+			noLabel:  "Quit the guide",
+			yesLabel: "Continue with the guide",
+			cursor:   1,
+		})
+		if cerr != nil {
+			return onboardQuit, cerr
+		}
+		if !carryOn {
+			return onboardQuit, nil
 		}
 	}
 	fmt.Println()
-	return onboardRan
+	return onboardRan, nil
+}
+
+// onboardChoice is the arrow-key prompt for a single step. The step's
+// explanation rides inside the model rather than being printed beforehand,
+// because the alternate screen would hide anything printed first.
+type onboardChoice struct {
+	heading string
+	step    onboardStep
+	options []string
+	cursor  int
+	choice  int // index picked; -1 until Enter, and left there on Esc
+}
+
+func (m onboardChoice) Init() tea.Cmd { return nil }
+
+func (m onboardChoice) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "ctrl+c", "esc", "q":
+		return m, tea.Quit
+	case "up", "k", "left", "h":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j", "right", "l", "tab":
+		if m.cursor < len(m.options)-1 {
+			m.cursor++
+		}
+	case "enter":
+		m.choice = m.cursor
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m onboardChoice) View() string {
+	var card strings.Builder
+	card.WriteString(theme.Title.Render(m.heading))
+	card.WriteString("\n\n  " + theme.Hint.Render(m.step.why))
+	card.WriteString("\n  " + theme.OutputValue.Render(m.step.state))
+	if m.step.done {
+		card.WriteString("\n  " + theme.StatusOk.Render("✓ already done — "+m.step.doneNote))
+	}
+
+	var b strings.Builder
+	b.WriteString(theme.Card.Render(card.String()))
+	b.WriteString("\n\n")
+
+	for i, opt := range m.options {
+		prefix := "  "
+		if i == m.cursor {
+			prefix = "❯ "
+			b.WriteString(theme.Selected.Render(prefix + opt))
+		} else {
+			b.WriteString(theme.MenuItem.Render(prefix + opt))
+		}
+		b.WriteByte('\n')
+	}
+
+	b.WriteByte('\n')
+	b.WriteString(theme.Hint.Render("↑/↓ move · enter select · esc quit the guide"))
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// runOnboardChoice shows m on the alternate screen and returns the picked index,
+// or -1 when the user escaped out.
+func runOnboardChoice(m onboardChoice) (int, error) {
+	m.choice = -1
+	res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	if err != nil {
+		return -1, err
+	}
+	final, ok := res.(onboardChoice)
+	if !ok {
+		return -1, nil
+	}
+	return final.choice, nil
 }
 
 // onboardOffered reports whether this user has already been offered the guide.

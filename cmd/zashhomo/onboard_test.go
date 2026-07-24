@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/LeeShunEE/zashhomo/internal/config"
 	"github.com/LeeShunEE/zashhomo/internal/paths"
@@ -103,20 +106,115 @@ func TestOnboardHidesPanelToken(t *testing.T) {
 	}
 }
 
-// The subscription step takes a URL, and a blank answer must mean "skip" rather
-// than "add an empty subscription".
+// Typing is reserved for the one thing that cannot be picked from a list: the
+// subscription URL. Every other step is answered with the arrow keys alone.
 func TestOnboardSubscriptionStepPrompts(t *testing.T) {
 	steps := onboardSteps(svc.State{}, config.Default())
 	sub := steps[1]
 	if sub.prompt == "" {
 		t.Fatal("the subscription step must ask for a URL")
 	}
-	if !strings.Contains(sub.prompt, "blank to skip") {
-		t.Errorf("prompt should say a blank answer skips, got %q", sub.prompt)
+	if !strings.Contains(sub.prompt, "blank to cancel") {
+		t.Errorf("prompt should say a blank answer backs out, got %q", sub.prompt)
 	}
 	for i, step := range steps {
 		if i != 1 && step.prompt != "" {
 			t.Errorf("step %q should not prompt for input", step.title)
+		}
+	}
+}
+
+// The cursor starts on the harmless answer: run a step still outstanding, leave
+// an already-satisfied one alone. Enter alone must never redo finished work.
+func TestOnboardOptionsDefaultToTheSafeAnswer(t *testing.T) {
+	tests := []struct {
+		name string
+		step onboardStep
+		want onboardAction
+	}{
+		{"outstanding", onboardStep{runLabel: "Install it now"}, actRun},
+		{"already done", onboardStep{runLabel: "Install it now", done: true, doneNote: "registered"}, actSkip},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels, actions := onboardOptions(tt.step)
+			if len(labels) != len(actions) {
+				t.Fatalf("%d labels but %d actions", len(labels), len(actions))
+			}
+			if actions[0] != tt.want {
+				t.Errorf("default option = %v, want %v (labels %q)", actions[0], tt.want, labels)
+			}
+			if actions[len(actions)-1] != actQuit {
+				t.Error("quitting the guide must be the last option")
+			}
+			if !slices.Contains(actions, actRun) || !slices.Contains(actions, actSkip) {
+				t.Errorf("every step must offer both run and skip, got %q", labels)
+			}
+			if !slices.Contains(labels, tt.step.runLabel) {
+				t.Errorf("the step's own run label %q is missing from %q", tt.step.runLabel, labels)
+			}
+		})
+	}
+}
+
+// Esc must not be read as "pick whatever the cursor is on" — the guide treats an
+// unanswered chooser as quitting, so the sentinel has to survive.
+func TestOnboardChoiceEscapes(t *testing.T) {
+	m := onboardChoice{
+		heading: "Step 1/5 · Install the service",
+		step:    onboardStep{why: "why", state: "service: not installed"},
+		options: []string{"Install it now", "Skip this step", "Quit the guide"},
+		choice:  -1,
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if final := got.(onboardChoice); final.choice != -1 {
+		t.Errorf("Esc chose option %d, want no choice at all", final.choice)
+	}
+
+	// Down then Enter picks the second option; the cursor stops at the last one.
+	moved, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got, _ = moved.(onboardChoice).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if final := got.(onboardChoice); final.choice != 1 {
+		t.Errorf("choice = %d, want 1", final.choice)
+	}
+
+	end := m
+	for i := 0; i < 5; i++ {
+		next, _ := end.Update(tea.KeyMsg{Type: tea.KeyDown})
+		end = next.(onboardChoice)
+	}
+	if end.cursor != len(m.options)-1 {
+		t.Errorf("cursor = %d, want it clamped to %d", end.cursor, len(m.options)-1)
+	}
+}
+
+func TestOnboardChoiceViewShowsContext(t *testing.T) {
+	view := onboardChoice{
+		heading: "Step 2/5 · Add a subscription",
+		step: onboardStep{
+			why:      "A subscription supplies the proxy nodes.",
+			state:    "subscriptions: 1",
+			done:     true,
+			doneNote: "1 already configured",
+		},
+		options: []string{"Skip — already done", "Add another subscription", "Quit the guide"},
+	}.View()
+
+	// The alternate screen hides anything printed before it, so the step's
+	// explanation has to be inside the chooser itself.
+	for _, want := range []string{
+		"Step 2/5 · Add a subscription",
+		"A subscription supplies the proxy nodes.",
+		"subscriptions: 1",
+		"1 already configured",
+		"Skip — already done",
+		"Add another subscription",
+		"Quit the guide",
+		"↑/↓",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("chooser view missing %q:\n%s", want, view)
 		}
 	}
 }

@@ -73,26 +73,51 @@ func menuHeader(st svc.State) string {
 	return b.String()
 }
 
+// subscriptionName returns the display name of the subscription at index i,
+// falling back to a positional name for entries the subscription didn't name.
+func subscriptionName(i int, s config.Subscription) string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return fmt.Sprintf("sub-%d", i)
+}
+
 // subscriptionMenu builds a dynamic submenu listing all subscriptions.
 func subscriptionMenu() []menuItem {
 	cfg, _ := config.Load(paths.New().Config)
 	if cfg == nil || len(cfg.Subscriptions) == 0 {
 		return []menuItem{
-			{label: "No subscriptions configured", disabled: "use 'Add subscription' to add one"},
+			{label: "No subscriptions configured", action: "noop", disabled: "use 'Add subscription' to add one"},
 		}
 	}
 
 	items := make([]menuItem, 0, len(cfg.Subscriptions))
 	for i, sub := range cfg.Subscriptions {
-		name := sub.Name
-		if name == "" {
-			name = fmt.Sprintf("sub-%d", i)
-		}
-		// Display name
-		_ = sub.URL // URL available but not shown in menu
 		items = append(items, menuItem{
-			label:  name,
+			label:  subscriptionName(i, sub),
 			action: fmt.Sprintf("sub show %d", i),
+		})
+	}
+	return items
+}
+
+// removeSubscriptionMenu builds the submenu for deleting a subscription: one row
+// per entry, each carrying its index in the action so the user picks the victim
+// with the arrow keys instead of typing a number. Choosing a row only opens the
+// confirmation — the delete itself happens in removeSubscriptionAt.
+func removeSubscriptionMenu() []menuItem {
+	cfg, _ := config.Load(paths.New().Config)
+	if cfg == nil || len(cfg.Subscriptions) == 0 {
+		return []menuItem{
+			{label: "No subscriptions configured", action: "noop", disabled: "nothing to remove"},
+		}
+	}
+
+	items := make([]menuItem, 0, len(cfg.Subscriptions))
+	for i, sub := range cfg.Subscriptions {
+		items = append(items, menuItem{
+			label:  subscriptionName(i, sub),
+			action: fmt.Sprintf("sub-remove %d", i),
 		})
 	}
 	return items
@@ -107,7 +132,8 @@ func rootMenu(st svc.State) []menuItem {
 	start := menuItem{label: "Start service", action: "service start"}
 	stop := menuItem{label: "Stop service", action: "service stop"}
 	restart := menuItem{label: "Restart service", action: "service restart"}
-	update := menuItem{label: "Update ▸", sub: []menuItem{
+	dashboard := menuItem{label: "Open dashboard", action: "dashboard"}
+	update := menuItem{label: "Software Update ▸", sub: []menuItem{
 		{label: "Kernel (--core)", action: "update --core"},
 		{label: "Panel (--ui)", action: "update --ui"},
 		{label: "Self (--self)", action: "update --self"},
@@ -116,7 +142,7 @@ func rootMenu(st svc.State) []menuItem {
 	subs := menuItem{label: "Subscriptions ▸", sub: []menuItem{
 		{label: "List subscriptions ▸", sub: subscriptionMenu()},
 		{label: "Add subscription…", action: "sub-add"},
-		{label: "Remove subscription…", action: "sub-remove"},
+		{label: "Remove subscription ▸", sub: removeSubscriptionMenu()},
 		{label: "Update & reload", action: "sub update"},
 		{label: "Set refresh interval…", action: "sub-interval"},
 		{label: "Open config file", action: "sub edit"},
@@ -137,20 +163,23 @@ func rootMenu(st svc.State) []menuItem {
 		stop.disabled = "not installed yet"
 		restart.disabled = "not installed yet"
 		uninstall.disabled = "not installed yet"
+		// The panel is served by the daemon, so there is nothing to open yet.
+		dashboard.disabled = "not installed yet"
 	case st.Running:
 		start.disabled = "service already running"
 	default:
 		stop.disabled = "service is not running"
+		dashboard.disabled = "service is not running"
 	}
 
 	// Order so the obvious next step leads.
 	switch {
 	case !st.Installed:
-		return []menuItem{install, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
+		return []menuItem{install, dashboard, subs, sysProxy, update, start, stop, restart, uninstall, version, help, exit}
 	case !st.Running:
-		return []menuItem{start, restart, stop, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{start, restart, stop, dashboard, subs, sysProxy, update, install, uninstall, version, help, exit}
 	default:
-		return []menuItem{stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
+		return []menuItem{dashboard, stop, restart, start, subs, sysProxy, update, install, uninstall, version, help, exit}
 	}
 }
 
@@ -233,9 +262,14 @@ func (m menuModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Title below the card, closer to menu items
-	b.WriteString(theme.Title.Render(strings.Join(m.titles, " ▸ ")))
-	b.WriteString("\n\n")
+	// Breadcrumb below the card — the root "zashhomo" is omitted since the
+	// banner (hero badge) inside the card already shows it.
+	if crumbs := m.titles[1:]; len(crumbs) > 0 {
+		b.WriteString(theme.Title.Render(strings.Join(crumbs, " ▸ ")))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteByte('\n')
+	}
 
 	// Menu items list
 	cur := *m.cursor()
@@ -273,6 +307,87 @@ func (m menuModel) View() string {
 	b.WriteByte('\n')
 
 	return b.String()
+}
+
+// confirmModel is the second gate in front of a destructive action: it names the
+// target, spells out that the change cannot be undone, and makes the user move
+// the cursor onto the destructive option. The cursor starts on "Cancel" so the
+// Enter that opened this screen can never delete anything by itself.
+type confirmModel struct {
+	title    string   // what is about to happen, e.g. "Remove subscription"
+	details  []string // the target's identifying lines (name, URL, …)
+	warning  string   // why this is irreversible
+	yesLabel string   // label of the destructive option
+	cursor   int      // 0 = cancel, 1 = confirm
+	answer   bool
+}
+
+func (m confirmModel) Init() tea.Cmd { return nil }
+
+func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "ctrl+c", "esc", "q":
+		return m, tea.Quit
+	case "up", "down", "left", "right", "k", "j", "h", "l", "tab":
+		m.cursor = 1 - m.cursor
+	case "enter":
+		m.answer = m.cursor == 1
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m confirmModel) View() string {
+	var card strings.Builder
+	card.WriteString(theme.Danger.Render(m.title))
+	card.WriteByte('\n')
+	for _, d := range m.details {
+		card.WriteString("\n  " + theme.OutputValue.Render(d))
+	}
+	if m.warning != "" {
+		card.WriteString("\n\n" + theme.Danger.Render("⚠ "+m.warning))
+	}
+
+	var b strings.Builder
+	b.WriteString(theme.Card.Render(card.String()))
+	b.WriteString("\n\n")
+
+	options := []string{"Cancel", m.yesLabel}
+	for i, opt := range options {
+		prefix := "  "
+		if i == m.cursor {
+			prefix = "❯ "
+		}
+		switch {
+		case i == m.cursor && i == 1:
+			b.WriteString(theme.Danger.Render(prefix + opt))
+		case i == m.cursor:
+			b.WriteString(theme.Selected.Render(prefix + opt))
+		default:
+			b.WriteString(theme.MenuItem.Render(prefix + opt))
+		}
+		b.WriteByte('\n')
+	}
+
+	b.WriteByte('\n')
+	b.WriteString(theme.Hint.Render("↑/↓ move · enter confirm · esc cancel"))
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// runConfirm shows m on the alternate screen and reports whether the user picked
+// the destructive option. Any other exit (Esc, Ctrl-C, a broken TTY) is a "no".
+func runConfirm(m confirmModel) (bool, error) {
+	res, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	if err != nil {
+		return false, err
+	}
+	final, ok := res.(confirmModel)
+	return ok && final.answer, nil
 }
 
 // runMenu shows the menu (built for st) on the alternate screen and returns the

@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -109,6 +110,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdService(args)
 	case "status":
 		return cmdStatus()
+	case "dashboard":
+		return cmdDashboard()
 	case "update":
 		return cmdUpdate(args)
 	case "sub":
@@ -194,6 +197,7 @@ Usage:
   zashhomo service start|stop|restart|status
                               Control the installed service (start/stop/restart need admin)
   zashhomo status             Show service status
+  zashhomo dashboard          Open the zashboard panel in your default browser
   zashhomo system-proxy enable|disable
                               Set or clear the OS system proxy (points at the mixed-port)
   zashhomo update [flags]     Update components (--core --ui --self --all)
@@ -453,13 +457,19 @@ func cmdMenu(_ []string) error {
 		if it.action == "" || it.action == "exit" {
 			return nil
 		}
+		// Placeholder rows ("No subscriptions configured") carry no command; go
+		// straight back to the menu instead of asking to force them through.
+		if it.action == "noop" {
+			continue
+		}
 		clearScreen()
 		// A greyed action doesn't apply in the current state; make the user
 		// confirm before forcing it through.
 		if it.disabled != "" && !confirmForce(it.label, it.disabled) {
 			continue
 		}
-		switch it.action {
+		fields := strings.Fields(it.action)
+		switch fields[0] {
 		case "sub-add":
 			url := promptLine("Subscription URL (blank to cancel): ")
 			if url == "" {
@@ -468,7 +478,7 @@ func cmdMenu(_ []string) error {
 				printCmdError(err)
 			}
 		case "sub-remove":
-			if err := promptRemoveSubscription(); err != nil {
+			if err := removeSubscriptionAt(fields[1:]); err != nil {
 				printCmdError(err)
 			}
 		case "sub-interval":
@@ -479,7 +489,6 @@ func cmdMenu(_ []string) error {
 				printCmdError(err)
 			}
 		default:
-			fields := strings.Fields(it.action)
 			if err := dispatch(fields[0], fields[1:]); err != nil {
 				printCmdError(err)
 			}
@@ -583,6 +592,52 @@ func cmdStatus() error {
 		fmt.Print(line("panelv:  ", orDash(cfg.UIVersion)))
 		fmt.Print(line("subs:    ", fmt.Sprintf("%d", len(cfg.Subscriptions))))
 	}
+	return nil
+}
+
+// cmdDashboard opens the zashboard panel in the user's default browser. The URL
+// carries the login token, so the panel comes up already authenticated; it is
+// printed as well so the user can open it by hand if the launch fails.
+func cmdDashboard() error {
+	cfg, err := config.Load(paths.New().Config)
+	if err != nil {
+		return err
+	}
+	if !svc.GetState().Running {
+		fmt.Println(theme.StatusWarn.Render("the service is not running — the panel won't answer until it is started"))
+	}
+	url := panelURL(cfg)
+	if err := openBrowser(url); err != nil {
+		return fmt.Errorf("%w\nopen it manually: %s", err, url)
+	}
+	fmt.Printf("opening the dashboard in your browser:\n  %s\n", url)
+	return nil
+}
+
+// openBrowser hands rawURL to the OS default browser. The browser is started but
+// not waited on, so the interactive menu stays responsive; a goroutine reaps the
+// launcher so it doesn't linger as a zombie for the life of the menu.
+func openBrowser(rawURL string) error {
+	var name string
+	var args []string
+	switch runtime.GOOS {
+	case "windows":
+		// rundll32 passes the URL to the shell verbatim; `cmd /c start` would
+		// treat the "&" of a query string as a command separator.
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", rawURL}
+	case "darwin":
+		name, args = "open", []string{rawURL}
+	default:
+		if _, err := exec.LookPath("xdg-open"); err != nil {
+			return fmt.Errorf("no browser launcher found (xdg-open is missing)")
+		}
+		name, args = "xdg-open", []string{rawURL}
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("open browser (%s): %w", name, err)
+	}
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
@@ -963,34 +1018,41 @@ func cmdSub(args []string) error {
 // promptRemoveSubscription lists the configured subscriptions and asks which one
 // to delete, then dispatches `sub remove <index>`. It is the interactive-menu
 // counterpart to the `sub remove` command.
-func promptRemoveSubscription() error {
-	p := paths.New()
-	cfg, err := loadOrInit(p)
+// removeSubscriptionAt deletes the subscription the user picked in the menu,
+// whose index arrives in args. Deleting rewrites the config with no undo, so it
+// asks for a second confirmation that names the entry first.
+func removeSubscriptionAt(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("sub-remove: expected a subscription index")
+	}
+	index, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid subscription index %q", args[0])
+	}
+
+	cfg, err := loadOrInit(paths.New())
 	if err != nil {
 		return err
 	}
-	if len(cfg.Subscriptions) == 0 {
-		fmt.Println("no subscriptions to remove")
-		return nil
+	if index < 0 || index >= len(cfg.Subscriptions) {
+		return fmt.Errorf("no subscription at index %d", index)
 	}
-	for i, s := range cfg.Subscriptions {
-		name := s.Name
-		if name == "" {
-			name = fmt.Sprintf("sub-%d", i)
-		}
-		fmt.Printf("  [%d] %s\n", i, theme.OutputValue.Render(name))
-		fmt.Printf("      %s\n", theme.Hint.Render(s.URL))
+	s := cfg.Subscriptions[index]
+
+	ok, err := runConfirm(confirmModel{
+		title:    "Remove this subscription?",
+		details:  []string{subscriptionName(index, s), s.URL},
+		warning:  "This cannot be undone — the entry is deleted from the config, and its nodes disappear on the next reload.",
+		yesLabel: "Delete it",
+	})
+	if err != nil {
+		return err
 	}
-	in := promptLine("\nIndex to remove (blank to cancel): ")
-	if in == "" {
+	if !ok {
 		fmt.Println("cancelled")
 		return nil
 	}
-	var index int
-	if _, err := fmt.Sscanf(in, "%d", &index); err != nil {
-		return fmt.Errorf("invalid index %q", in)
-	}
-	return dispatch("sub", []string{"remove", fmt.Sprintf("%d", index)})
+	return dispatch("sub", []string{"remove", strconv.Itoa(index)})
 }
 
 // printSubscriptions lists the configured subscriptions with their metadata and

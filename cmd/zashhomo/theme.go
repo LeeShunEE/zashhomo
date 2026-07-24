@@ -9,26 +9,28 @@ import (
 
 // ColorPalette defines semantic colors for the theme.
 type ColorPalette struct {
-	Primary   lipgloss.TerminalColor // Main color (titles, emphasis)
-	Secondary lipgloss.TerminalColor // Secondary color (labels)
-	Accent    lipgloss.TerminalColor // Highlight color (selected items)
-	Success   lipgloss.TerminalColor // Success status (running)
-	Warning   lipgloss.TerminalColor // Warning status (stopped)
-	Muted     lipgloss.TerminalColor // Muted (disabled items, hints)
-	Border    lipgloss.TerminalColor // Border color
+	Primary    lipgloss.TerminalColor // Main color (titles, emphasis)
+	Secondary  lipgloss.TerminalColor // Secondary color (labels)
+	Accent     lipgloss.TerminalColor // Highlight color (selected items)
+	Success    lipgloss.TerminalColor // Success status (running)
+	Warning    lipgloss.TerminalColor // Warning status (stopped)
+	Danger     lipgloss.TerminalColor // Destructive actions (delete confirmation)
+	Muted      lipgloss.TerminalColor // Muted (disabled items, hints)
+	Border     lipgloss.TerminalColor // Border color
 	Background lipgloss.TerminalColor // Background fill
 }
 
 // DefaultPalette returns the default dark theme palette.
 func DefaultPalette() ColorPalette {
 	return ColorPalette{
-		Primary:    lipgloss.Color("13"), // Pink/purple (maintain existing style)
-		Secondary:  lipgloss.Color("8"),  // Bright gray
-		Accent:     lipgloss.Color("14"), // Bright cyan
-		Success:    lipgloss.Color("10"), // Green
-		Warning:    lipgloss.Color("11"), // Yellow
-		Muted:      lipgloss.Color("8"),  // Dark gray
-		Border:     lipgloss.Color("8"),  // Border gray
+		Primary:    lipgloss.Color("13"),  // Pink/purple (maintain existing style)
+		Secondary:  lipgloss.Color("8"),   // Bright gray
+		Accent:     lipgloss.Color("14"),  // Bright cyan
+		Success:    lipgloss.Color("10"),  // Green
+		Warning:    lipgloss.Color("11"),  // Yellow
+		Danger:     lipgloss.Color("9"),   // Bright red
+		Muted:      lipgloss.Color("8"),   // Dark gray
+		Border:     lipgloss.Color("8"),   // Border gray
 		Background: lipgloss.Color("235"), // Dark background (optional)
 	}
 }
@@ -36,13 +38,14 @@ func DefaultPalette() ColorPalette {
 // LightPalette returns a palette optimized for light terminal backgrounds.
 func LightPalette() ColorPalette {
 	return ColorPalette{
-		Primary:    lipgloss.Color("5"),  // Magenta (visible on light bg)
-		Secondary:  lipgloss.Color("0"),  // Black
-		Accent:     lipgloss.Color("6"),  // Cyan
-		Success:    lipgloss.Color("2"),  // Green
-		Warning:    lipgloss.Color("3"),  // Yellow
-		Muted:      lipgloss.Color("7"),  // Light gray
-		Border:     lipgloss.Color("7"),  // Border gray
+		Primary:    lipgloss.Color("5"),   // Magenta (visible on light bg)
+		Secondary:  lipgloss.Color("0"),   // Black
+		Accent:     lipgloss.Color("6"),   // Cyan
+		Success:    lipgloss.Color("2"),   // Green
+		Warning:    lipgloss.Color("3"),   // Yellow
+		Danger:     lipgloss.Color("1"),   // Red
+		Muted:      lipgloss.Color("7"),   // Light gray
+		Border:     lipgloss.Color("7"),   // Border gray
 		Background: lipgloss.Color("255"), // White background
 	}
 }
@@ -61,6 +64,7 @@ type Theme struct {
 	Label      lipgloss.Style
 	StatusOk   lipgloss.Style
 	StatusWarn lipgloss.Style
+	Danger     lipgloss.Style
 	MenuItem   lipgloss.Style
 	Card       lipgloss.Style
 
@@ -101,6 +105,9 @@ func DefaultTheme() Theme {
 			Bold(true),
 		StatusWarn: lipgloss.NewStyle().
 			Foreground(p.Warning),
+		Danger: lipgloss.NewStyle().
+			Foreground(p.Danger).
+			Bold(true),
 		MenuItem: lipgloss.NewStyle().
 			PaddingLeft(2),
 		Card: lipgloss.NewStyle().
@@ -153,6 +160,9 @@ func LightTheme() Theme {
 			Bold(true),
 		StatusWarn: lipgloss.NewStyle().
 			Foreground(p.Warning),
+		Danger: lipgloss.NewStyle().
+			Foreground(p.Danger).
+			Bold(true),
 		MenuItem: lipgloss.NewStyle().
 			PaddingLeft(2),
 		Card: lipgloss.NewStyle().

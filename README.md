@@ -32,11 +32,13 @@ Sparkle 作为独立 GUI 应用约占用 **700 MB** 内存；而 zashhomo 自身
 
 ## 一行安装
 
-Linux / macOS：
+<!-- Linux / macOS（实验性，暂不推荐）：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LeeShunEE/zashhomo/main/install.sh | bash
 ```
+
+-->
 
 Windows（PowerShell）：
 
